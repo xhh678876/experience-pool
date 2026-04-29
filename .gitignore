@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg
+build/
+dist/cli/
+
+# Node
+node_modules/
+.next/
+*.tsbuildinfo
+.turbo/
+cli/dist/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Local data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.bak
+.experience-pool/
+trajectories/
+skills/*.tar.gz
+
+# Build artifacts
+uv.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Local env
+.env
+.env.local
+.env.*.local

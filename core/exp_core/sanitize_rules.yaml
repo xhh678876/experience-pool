@@ -1,0 +1,115 @@
+# Sanitizer rules for the three-layer pipeline.
+#
+# Layer 1 is driven by these rules. Categories with `severity: high` cause
+# the experience to be routed to human review (review_status='pending')
+# even if Layer 2/3 are clean.
+#
+# Each rule may be either a `pattern` (Python re) or a `match` keyword
+# (e.g. `luhn` for credit-card validation, `bearer` for HTTP Authorization
+# headers). The replacement is the literal placeholder string.
+
+internal_domains:
+  # Hostnames whose appearance should be redacted as <INTERNAL_HOST>.
+  # Customize these for your org. Subdomains are matched via right-anchored
+  # suffix; e.g. "corp.example.com" also matches "build.corp.example.com".
+  - corp.example.com
+  - internal.example.com
+  - eng.example.com
+  - intra.example
+  - acme-internal.net
+
+employee_id_prefixes:
+  # Token prefixes that identify an internal employee ID. Configure per
+  # company convention. Match is `<PREFIX>\d{4,8}` case-insensitive.
+  - EMP
+  - STAFF
+  - SJTU
+
+rules:
+  # ----- Layer 1: high-severity rules run FIRST so their digits/keys
+  # don't get partially clipped by the phone or email rules. -----
+
+  - name: pem_private_key
+    pattern: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'
+    placeholder: <KEY>
+    severity: high
+
+  - name: ssh_rsa
+    pattern: 'ssh-(?:rsa|ed25519|dss)\s+[A-Za-z0-9+/=]{80,}'
+    placeholder: <KEY>
+    severity: high
+
+  - name: aws_access_key
+    pattern: '\bAKIA[0-9A-Z]{16}\b'
+    placeholder: <KEY>
+    severity: high
+
+  - name: bearer_token
+    pattern: '(?i)(?:Authorization:\s*Bearer\s+|Bearer\s+)([A-Za-z0-9._\-]{16,})'
+    placeholder: 'Bearer <TOKEN>'
+    severity: high
+
+  - name: anthropic_key
+    pattern: '\bsk-ant-[A-Za-z0-9_\-]{20,}\b'
+    placeholder: <SECRET>
+    severity: high
+
+  - name: stripe_secret
+    pattern: '\bsk_live_[0-9a-zA-Z]{16,}\b'
+    placeholder: <SECRET>
+    severity: high
+
+  - name: github_token
+    pattern: '\bghp_[0-9a-zA-Z]{20,}\b'
+    placeholder: <SECRET>
+    severity: high
+
+  - name: openai_key
+    # Matches sk-... but must NOT match sk-ant-... (handled above).
+    pattern: '\bsk-(?!ant-)[A-Za-z0-9]{20,}\b'
+    placeholder: <SECRET>
+    severity: high
+
+  - name: generic_api_key
+    # Heuristic: assignment to a variable named *_key/_token/_secret/_password.
+    pattern: '(?i)(api[_-]?key|access[_-]?token|secret[_-]?key|password)\s*[:=]\s*["\x27]?([A-Za-z0-9_\-]{16,})["\x27]?'
+    placeholder: '\1=<SECRET>'
+    severity: high
+
+  - name: url_with_credentials
+    pattern: 'https?://([^\s/:@]+):([^\s/@]+)@'
+    placeholder: 'https://<USER>:<PASS>@'
+    severity: high
+
+  # Credit cards run before phone so a 16-digit Luhn-valid number isn't
+  # eaten by the permissive phone regex.
+  - name: credit_card
+    match: luhn
+    placeholder: <CARD>
+    severity: high
+
+  # ----- Layer 1, low/medium severity -----
+
+  - name: email
+    pattern: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+    placeholder: <EMAIL>
+    severity: medium
+
+  - name: phone_intl
+    # Conservative: must start at a non-digit boundary and require an
+    # explicit international prefix or a leading group so we don't gobble
+    # arbitrary 10-digit substrings.
+    pattern: '(?<![\w@])(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?|\d{2,4}[\s.-])\d{3,4}[\s.-]?\d{3,4}\b'
+    placeholder: <PHONE>
+    severity: medium
+    min_digits: 10
+
+  - name: ipv4
+    pattern: '\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b'
+    placeholder: <IP>
+    severity: low
+
+  - name: ipv6
+    pattern: '\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b'
+    placeholder: <IP>
+    severity: low
