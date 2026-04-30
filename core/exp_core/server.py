@@ -25,6 +25,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from . import lite as lite_mod
 from . import skills as skills_mod
 from .acl_search import get_with_acl, search_with_acl
 from .identity import issue_credential, load_credential, verify_signature
@@ -230,6 +231,51 @@ async def skill_install(name: str, request: Request, version: str | None = None)
         "bundle_b64": base64.b64encode(bundle).decode("ascii"),
         "bundle_sha256": row["bundle_sha256"],
     }
+
+
+class LitePushReq(BaseModel):
+    query: str
+    intent: str
+    steps: list[str]
+    outcome: str
+    task_type: str = "misc"
+    source_model: str = "unknown"
+    sensitivity: str = "medium"
+    acl: str = "private"
+    tags: list[str] = Field(default_factory=list)
+    redactions: dict[str, int] = Field(default_factory=dict)
+
+
+class LiteSearchReq(BaseModel):
+    q: str
+    top_k: int = 5
+    task_type: str | None = None
+
+
+@app.post("/v1/lite/push", status_code=202)
+async def lite_push(req: LitePushReq, request: Request) -> dict[str, Any]:
+    pool = _pool()
+    actor = request.state.agent_name
+    card = lite_mod.LiteCard(
+        query=req.query, intent=req.intent, steps=req.steps, outcome=req.outcome,
+        task_type=req.task_type, source_model=req.source_model,
+        sensitivity=req.sensitivity, acl=req.acl, tags=req.tags,
+        redactions=req.redactions,
+    )
+    return lite_mod.push_lite(
+        pool.conn, rules=pool._sanitize_rules,
+        agent_name=actor, card=card,
+    )
+
+
+@app.post("/v1/lite/search")
+async def lite_search(req: LiteSearchReq, request: Request) -> dict[str, Any]:
+    pool = _pool()
+    actor = request.state.agent_name
+    return {"results": lite_mod.search_lite(
+        pool.conn, viewer_name=actor, query=req.q,
+        top_k=req.top_k, task_type=req.task_type,
+    )}
 
 
 @app.get("/v1/admin/dashboard")

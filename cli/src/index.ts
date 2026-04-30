@@ -28,6 +28,7 @@ import {
   type Credential,
 } from "./config.js";
 import { GatewayClient } from "./client.js";
+import { prepareLocalRuleBased } from "./lite.js";
 
 void tar; // keep ts happy if reformat trims this
 
@@ -215,6 +216,68 @@ program
         2,
       ),
     );
+  });
+
+program
+  .command("prepare")
+  .description("v0 lite: locally sanitize + structure a trajectory file (no upload)")
+  .requiredOption("--file <file>", "Trajectory JSON")
+  .option("--task <type>", "", "misc")
+  .option("--model <model>", "", "unknown")
+  .option("--sensitivity <s>", "low|medium|high", "medium")
+  .option("--acl <acl>", "private|team:<X>|public", "private")
+  .option("--tag <tag>", "Repeat to add tags", collect, [])
+  .action((opts) => {
+    const raw = JSON.parse(fs.readFileSync(opts.file, "utf-8"));
+    const trajectory = Array.isArray(raw) ? raw : raw.trajectory ?? raw;
+    const card = prepareLocalRuleBased(trajectory, {
+      task_type: opts.task,
+      source_model: opts.model,
+      sensitivity: opts.sensitivity,
+      acl: opts.acl,
+      tags: opts.tag ?? [],
+    });
+    console.log(JSON.stringify(card, null, 2));
+  });
+
+program
+  .command("push-lite")
+  .description("v0 lite: prepare locally + upload (skips server-side judge/credit)")
+  .requiredOption("--file <file>", "Trajectory JSON")
+  .option("--task <type>", "", "misc")
+  .option("--model <model>", "", "unknown")
+  .option("--sensitivity <s>", "low|medium|high", "medium")
+  .option("--acl <acl>", "private|team:<X>|public", "private")
+  .option("--tag <tag>", "Repeat to add tags", collect, [])
+  .action(async (opts, cmd) => {
+    const client = buildClient(cmd, true);
+    const raw = JSON.parse(fs.readFileSync(opts.file, "utf-8"));
+    const trajectory = Array.isArray(raw) ? raw : raw.trajectory ?? raw;
+    const card = prepareLocalRuleBased(trajectory, {
+      task_type: opts.task,
+      source_model: opts.model,
+      sensitivity: opts.sensitivity,
+      acl: opts.acl,
+      tags: opts.tag ?? [],
+    });
+    const result = await client.request<unknown>("POST", "/v1/lite/push", card);
+    console.log(JSON.stringify(result, null, 2));
+  });
+
+program
+  .command("search-lite")
+  .description("v0 lite: pure cosine search, ACL-filtered, top-k")
+  .requiredOption("--q <query>")
+  .option("--top-k <k>", "", (v) => parseInt(v, 10), 5)
+  .option("--task <task>")
+  .action(async (opts, cmd) => {
+    const client = buildClient(cmd, true);
+    const result = await client.request<unknown>("POST", "/v1/lite/search", {
+      q: opts.q,
+      top_k: opts.topK,
+      task_type: opts.task,
+    });
+    console.log(JSON.stringify(result, null, 2));
   });
 
 program

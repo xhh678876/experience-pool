@@ -31,7 +31,7 @@ from . import llm, prompts
 from .embeddings import DIM, cosine, embed, from_blob, to_blob
 from .ranking import Candidate, q_scalar, score_candidates
 from .sanitize import RuleSet, load_rules, sanitize_trajectory
-from .schema import SCHEMA
+from .schema import LITE_MIGRATIONS, SCHEMA
 
 EXTRACTOR_VERSION = "extractor-v1"
 JUDGE_VERSION = "judge-v1"
@@ -79,9 +79,20 @@ class ExperiencePool:
         self.conn = sqlite3.connect(self.config.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._apply_lite_migrations()
         self.conn.commit()
         # Load rules once at startup; tests can inject a custom RuleSet.
         self._sanitize_rules = sanitize_rules or load_rules()
+
+    def _apply_lite_migrations(self) -> None:
+        """Idempotently add columns introduced after the original schema."""
+        for table, column_def in LITE_MIGRATIONS:
+            col_name = column_def.split()[0]
+            cur = self.conn.execute(f"PRAGMA table_info({table})")
+            existing = {row[1] for row in cur.fetchall()}
+            if col_name in existing:
+                continue
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
 
     # ----- agents -----
     def register_agent(self, name: str, team: str) -> str:

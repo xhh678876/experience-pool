@@ -21,6 +21,7 @@ import os
 import sys
 from pathlib import Path
 
+from . import lite as lite_mod
 from .acl_search import get_with_acl, search_with_acl
 from .export import export as run_export
 from .identity import issue_credential, load_credential
@@ -255,6 +256,73 @@ def cmd_reject_skill(args) -> int:
     return 0 if "error" not in res else 1
 
 
+def cmd_prepare(args) -> int:
+    """Local-only: sanitize + structure a trajectory file. Prints the card.
+
+    Useful for debugging the lite path or for piping to `push-lite --card -`.
+    """
+    payload = json.loads(Path(args.file).read_text())
+    trajectory = payload.get("trajectory", payload) if isinstance(payload, dict) else payload
+    card = lite_mod.prepare_local(
+        trajectory,
+        use_llm=args.use_llm,
+        task_type=args.task,
+        source_model=args.model,
+        sensitivity=args.sensitivity,
+        acl=args.acl,
+        tags=args.tag,
+    )
+    print(json.dumps(card.to_dict(), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_push_lite(args) -> int:
+    pool = ExperiencePool(_config())
+    if args.card == "-":
+        card_dict = json.loads(sys.stdin.read())
+    elif args.card:
+        card_dict = json.loads(Path(args.card).read_text())
+    else:
+        # Build it from the trajectory in one shot.
+        traj_payload = json.loads(Path(args.file).read_text())
+        trajectory = traj_payload.get("trajectory", traj_payload) if isinstance(traj_payload, dict) else traj_payload
+        card_dict = lite_mod.prepare_local(
+            trajectory,
+            use_llm=args.use_llm,
+            task_type=args.task,
+            source_model=args.model,
+            sensitivity=args.sensitivity,
+            acl=args.acl,
+            tags=args.tag,
+        ).to_dict()
+    card = lite_mod.LiteCard(
+        query=card_dict["query"], intent=card_dict["intent"],
+        steps=card_dict["steps"], outcome=card_dict["outcome"],
+        task_type=card_dict.get("task_type", args.task),
+        source_model=card_dict.get("source_model", args.model),
+        sensitivity=card_dict.get("sensitivity", args.sensitivity),
+        acl=card_dict.get("acl", args.acl),
+        tags=card_dict.get("tags", args.tag),
+        redactions=card_dict.get("redactions", {}),
+    )
+    result = lite_mod.push_lite(
+        pool.conn, rules=pool._sanitize_rules,
+        agent_name=args.agent, card=card,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_search_lite(args) -> int:
+    pool = ExperiencePool(_config())
+    hits = lite_mod.search_lite(
+        pool.conn, viewer_name=args.agent, query=args.q,
+        top_k=args.top_k, task_type=args.task,
+    )
+    print(json.dumps(hits, indent=2, ensure_ascii=False))
+    return 0
+
+
 def cmd_push_skill(args) -> int:
     pool = ExperiencePool(_config())
     info = pool.push_skill(
@@ -413,6 +481,35 @@ def main() -> int:
     pag.add_argument("--agent", required=True)
     pag.add_argument("experience_id")
     pag.set_defaults(func=cmd_acl_get)
+
+    pprep = sub.add_parser("prepare", help="v0 lite: locally sanitize + structure a trajectory file")
+    pprep.add_argument("--file", required=True)
+    pprep.add_argument("--task", default="misc")
+    pprep.add_argument("--model", default="unknown")
+    pprep.add_argument("--sensitivity", choices=["low", "medium", "high"], default="medium")
+    pprep.add_argument("--acl", default="private", help="private | team:<X> | public")
+    pprep.add_argument("--tag", action="append", default=[])
+    pprep.add_argument("--use-llm", action="store_true", help="Use LLM extractor instead of rule-based")
+    pprep.set_defaults(func=cmd_prepare)
+
+    ppl = sub.add_parser("push-lite", help="v0 lite: upload a structured card (skips judge/credit)")
+    ppl.add_argument("--agent", required=True)
+    ppl.add_argument("--file", default=None, help="Trajectory JSON (will run prepare locally)")
+    ppl.add_argument("--card", default=None, help="Pre-prepared card JSON file, or '-' for stdin")
+    ppl.add_argument("--task", default="misc")
+    ppl.add_argument("--model", default="unknown")
+    ppl.add_argument("--sensitivity", choices=["low", "medium", "high"], default="medium")
+    ppl.add_argument("--acl", default="private", help="private | team:<X> | public")
+    ppl.add_argument("--tag", action="append", default=[])
+    ppl.add_argument("--use-llm", action="store_true")
+    ppl.set_defaults(func=cmd_push_lite)
+
+    psl = sub.add_parser("search-lite", help="v0 lite: pure cosine search, ACL-filtered")
+    psl.add_argument("--agent", required=True)
+    psl.add_argument("--q", required=True)
+    psl.add_argument("--top-k", type=int, default=5)
+    psl.add_argument("--task", default=None)
+    psl.set_defaults(func=cmd_search_lite)
 
     pps = sub.add_parser("push-skill", help="Upload a skill bundle (directory containing SKILL.md)")
     pps.add_argument("--agent", required=True)

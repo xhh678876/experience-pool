@@ -83,13 +83,12 @@ def test_export_writes_partitioned_parquet(tmp_path):
     assert result.row_count == 3
     assert len(result.partition_paths) >= 2
 
-    today = date.today().isoformat()
-    expected_paths = [
-        out_dir / f"task_type=csv_analysis/date={today}/data.parquet",
-        out_dir / f"task_type=code_review/date={today}/data.parquet",
-    ]
-    for p in expected_paths:
-        assert p.exists(), f"missing partition file {p}"
+    # SQLite stores created_at in UTC; the local clock may be on the next/prev
+    # day. Don't pin to date.today() — read the actual task_type dirs that
+    # got written and assert both task types appeared.
+    task_type_dirs = {p.parent.parent.name for p in result.partition_paths}
+    assert "task_type=csv_analysis" in task_type_dirs
+    assert "task_type=code_review" in task_type_dirs
     for p in result.partition_paths:
         assert p.exists()
 

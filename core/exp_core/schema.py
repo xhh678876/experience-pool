@@ -1,4 +1,19 @@
-"""SQLite schema. Mirrors the postgres schema with type adjustments."""
+"""SQLite schema. Mirrors the postgres schema with type adjustments.
+
+Heavier columns (q_*, q_update_count, etc.) are kept here even when only the
+lite v0 path is active; the lite path simply doesn't write to them. This lets
+us turn on judge / credit / dedup later without a schema migration.
+"""
+
+# Columns introduced after the original v1 schema. We add them at startup with
+# `PRAGMA table_info` checks so existing pool.db files keep working without a
+# manual migration.
+LITE_MIGRATIONS: list[tuple[str, str]] = [
+    ("experiences", "query TEXT"),
+    ("experiences", "outcome TEXT"),
+    ("experiences", "ingest_path TEXT NOT NULL DEFAULT 'full'"),  # 'full' | 'lite'
+]
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
