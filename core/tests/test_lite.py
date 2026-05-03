@@ -135,7 +135,7 @@ def test_acl_team_visible_to_same_team(tmp_path):
     pool.close()
 
 
-def test_acl_public_alias_for_org(tmp_path):
+def test_acl_public_visible_to_every_team(tmp_path):
     pool = make_pool(tmp_path)
     pool.register_agent("alice", "platform")
     pool.register_agent("bob", "data")
@@ -144,9 +144,25 @@ def test_acl_public_alias_for_org(tmp_path):
                                   acl="public")
     lite_mod.push_lite(pool.conn, rules=pool._sanitize_rules,
                        agent_name="alice", card=card)
-    # bob (different team) can read because acl resolved to org.
-    assert len(lite_mod.search_lite(pool.conn, viewer_name="bob",
-                                     query="everyone")) == 1
+    # bob (different team) can read because public is visible to everyone.
+    hits = lite_mod.search_lite(pool.conn, viewer_name="bob", query="everyone")
+    assert len(hits) == 1
+    assert hits[0]["acl"] == "public"
+    pool.close()
+
+
+def test_acl_org_legacy_alias_still_visible(tmp_path):
+    pool = make_pool(tmp_path)
+    pool.register_agent("alice", "platform")
+    pool.register_agent("bob", "data")
+
+    card = lite_mod.prepare_local(trajectory("legacy-org visible"), acl="org")
+    lite_mod.push_lite(pool.conn, rules=pool._sanitize_rules,
+                       agent_name="alice", card=card)
+
+    hits = lite_mod.search_lite(pool.conn, viewer_name="bob", query="legacy-org")
+    assert len(hits) == 1
+    assert hits[0]["acl"] == "public"
     pool.close()
 
 

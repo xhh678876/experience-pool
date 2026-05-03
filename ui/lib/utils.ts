@@ -39,7 +39,7 @@ export function statusColor(status: string): string {
       return "bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800";
     case "pending":
     default:
-      return "bg-slate-100 text-slate-900 border-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700";
+      return "bg-cyan-100 text-cyan-950 border-cyan-300 dark:bg-cyan-400/12 dark:text-cyan-100 dark:border-cyan-300/30";
   }
 }
 
@@ -51,6 +51,6 @@ export function sensitivityColor(s: string): string {
       return "bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800";
     case "low":
     default:
-      return "bg-slate-100 text-slate-900 border-slate-300 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700";
+      return "bg-emerald-100 text-emerald-950 border-emerald-300 dark:bg-emerald-400/12 dark:text-emerald-100 dark:border-emerald-300/30";
   }
 }

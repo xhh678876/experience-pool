@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Experience Pool — 内网 Agent 共享大脑</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --bg-elev: #11141b;
+    --bg-card: #161a23;
+    --border: #232734;
+    --border-soft: #1c2030;
+    --fg: #e6e8ee;
+    --fg-dim: #9097a8;
+    --fg-mute: #6a7184;
+    --accent: #7c9cff;
+    --accent-2: #5eead4;
+    --accent-3: #f6c177;
+    --danger: #f47174;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --code-bg: #0e1117;
+    --grad: linear-gradient(135deg, #7c9cff 0%, #5eead4 100%);
+    --grad-soft: linear-gradient(135deg, rgba(124,156,255,.12) 0%, rgba(94,234,212,.12) 100%);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  code, pre, .mono { font-family: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace; }
+
+  /* Nav */
+  nav.top {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(12px);
+    background: rgba(11,13,18,.72);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  nav.top .inner {
+    max-width: 1200px; margin: 0 auto; padding: 14px 32px;
+    display: flex; align-items: center; gap: 32px;
+  }
+  nav.top .brand {
+    font-weight: 700; letter-spacing: -.01em;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+    font-size: 16px;
+  }
+  nav.top .brand-mark { display: inline-block; width: 22px; height: 22px; border-radius: 6px; background: var(--grad); margin-right: 8px; vertical-align: -6px; }
+  nav.top a { color: var(--fg-dim); text-decoration: none; font-size: 14px; transition: color .15s; }
+  nav.top a:hover { color: var(--fg); }
+  nav.top .links { display: flex; gap: 24px; flex: 1; }
+  nav.top .badge {
+    font-size: 11px; padding: 3px 10px; border-radius: 99px;
+    background: rgba(94,234,212,.12); color: var(--accent-2);
+    border: 1px solid rgba(94,234,212,.24);
+  }
+
+  /* Layout */
+  section { padding: 80px 32px; border-bottom: 1px solid var(--border-soft); }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  .eyebrow { color: var(--accent-2); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; }
+  h1, h2, h3, h4 { letter-spacing: -.02em; }
+  h2 { font-size: 32px; margin: 8px 0 12px; }
+  h3 { font-size: 20px; margin: 0 0 8px; }
+  p.lead { color: var(--fg-dim); font-size: 16px; max-width: 720px; }
+
+  /* Hero */
+  .hero {
+    padding: 120px 32px 100px;
+    background:
+      radial-gradient(900px 500px at 75% 0%, rgba(124,156,255,.18), transparent 60%),
+      radial-gradient(700px 400px at 0% 30%, rgba(94,234,212,.10), transparent 60%);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .hero h1 {
+    font-size: 56px; line-height: 1.05; margin: 0 0 20px;
+    background: linear-gradient(180deg, #ffffff 0%, #b8bfd1 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    font-weight: 700;
+  }
+  .hero h1 em {
+    font-style: normal;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero .sub { font-size: 18px; color: var(--fg-dim); max-width: 720px; margin-bottom: 36px; }
+  .hero .pills { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 40px; }
+  .pill {
+    font-size: 12px; padding: 6px 12px; border-radius: 99px;
+    background: var(--bg-card); border: 1px solid var(--border); color: var(--fg-dim);
+  }
+  .pill .dot { display: inline-block; width: 6px; height: 6px; border-radius: 99px; background: var(--ok); margin-right: 6px; vertical-align: 2px; }
+  .pill.warn .dot { background: var(--warn); }
+  .hero-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; max-width: 720px; }
+  .stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .stat .num { font-size: 28px; font-weight: 700; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .stat .label { font-size: 12px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: .1em; margin-top: 2px; }
+
+  /* Three-piece architecture */
+  .arch {
+    display: grid; grid-template-columns: 1fr 80px 1fr 80px 1fr; gap: 0;
+    margin-top: 40px; align-items: stretch;
+  }
+  .arch-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px; position: relative;
+  }
+  .arch-card .num {
+    position: absolute; top: -12px; left: 18px; width: 28px; height: 28px; border-radius: 8px;
+    background: var(--grad); color: #0b0d12; font-weight: 700; display: grid; place-items: center; font-size: 13px;
+  }
+  .arch-card h4 { margin: 4px 0 6px; font-size: 16px; }
+  .arch-card .tag { font-size: 11px; color: var(--accent-2); text-transform: uppercase; letter-spacing: .1em; }
+  .arch-card p { color: var(--fg-dim); font-size: 13px; margin: 8px 0 0; }
+  .arch-card .stack { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 11px; padding: 3px 8px; background: rgba(124,156,255,.10); color: var(--accent); border-radius: 6px; border: 1px solid rgba(124,156,255,.20); font-family: "SF Mono", monospace; }
+  .chip.green { background: rgba(94,234,212,.10); color: var(--accent-2); border-color: rgba(94,234,212,.22); }
+  .chip.amber { background: rgba(246,193,119,.10); color: var(--accent-3); border-color: rgba(246,193,119,.22); }
+  .arch-arrow { display: grid; place-items: center; color: var(--fg-mute); }
+  .arch-arrow svg { width: 100%; max-width: 60px; }
+
+  /* Pipeline diagram */
+  .pipe {
+    margin-top: 32px; padding: 28px; background: var(--bg-elev);
+    border: 1px solid var(--border); border-radius: 14px;
+    display: grid; grid-template-columns: 110px repeat(6, 1fr) 130px;
+    gap: 10px; align-items: center;
+  }
+  .pipe-box {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 10px; text-align: center; font-size: 12px;
+  }
+  .pipe-box.ingress { background: var(--grad-soft); border-color: rgba(124,156,255,.30); }
+  .pipe-box.egress  { background: linear-gradient(135deg, rgba(94,234,212,.14), rgba(124,156,255,.10)); border-color: rgba(94,234,212,.32); }
+  .pipe-box .step-name { font-weight: 600; color: var(--fg); }
+  .pipe-box .step-meta { color: var(--fg-mute); font-size: 11px; margin-top: 4px; font-family: "SF Mono", monospace; }
+  .pipe-arrow { color: var(--fg-mute); text-align: center; font-size: 18px; }
+
+  /* Milestones grid */
+  .ms-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 36px; }
+  .ms { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 22px; transition: transform .2s, border-color .2s; }
+  .ms:hover { transform: translateY(-2px); border-color: rgba(124,156,255,.40); }
+  .ms-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .ms-tag { font-family: "SF Mono", monospace; font-size: 11px; color: var(--accent); padding: 3px 8px; border-radius: 6px; background: rgba(124,156,255,.10); border: 1px solid rgba(124,156,255,.22); }
+  .ms-status { font-size: 11px; color: var(--ok); }
+  .ms-status::before { content: "●"; margin-right: 4px; }
+  .ms h3 { font-size: 16px; margin: 0 0 6px; }
+  .ms p { font-size: 13px; color: var(--fg-dim); margin: 0; }
+  .ms ul { margin: 10px 0 0; padding: 0; list-style: none; }
+  .ms ul li { font-size: 12px; color: var(--fg-mute); padding: 3px 0; padding-left: 14px; position: relative; }
+  .ms ul li::before { content: "▸"; position: absolute; left: 0; color: var(--accent-2); }
+
+  /* Code block */
+  pre.code {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; overflow-x: auto; font-size: 13px; line-height: 1.6;
+    margin: 12px 0;
+  }
+  pre.code .c1 { color: var(--fg-mute); }   /* comment */
+  pre.code .k1 { color: #c4a7e7; }            /* keyword */
+  pre.code .s1 { color: var(--accent-2); }    /* string */
+  pre.code .v1 { color: var(--accent); }      /* var/cmd */
+  pre.code .n1 { color: var(--accent-3); }    /* num */
+  .code-tabs { display: flex; gap: 4px; margin-bottom: -1px; }
+  .code-tab { padding: 8px 14px; font-size: 12px; color: var(--fg-mute); cursor: pointer; border: 1px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0; font-family: "SF Mono", monospace; }
+  .code-tab.active { color: var(--fg); background: var(--code-bg); border-color: var(--border); }
+  .code-block { display: none; }
+  .code-block.active { display: block; }
+  .code-wrap pre.code { border-top-left-radius: 0; margin-top: 0; }
+
+  /* Sanitizer table */
+  table.san { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
+  table.san th, table.san td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-soft); }
+  table.san th { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--fg-mute); font-weight: 600; }
+  table.san td { color: var(--fg-dim); }
+  table.san td .mono { color: var(--accent); font-size: 12px; }
+  .sev { font-size: 11px; padding: 2px 8px; border-radius: 99px; font-weight: 600; }
+  .sev.high { background: rgba(244,113,116,.12); color: var(--danger); }
+  .sev.med  { background: rgba(251,191,36,.12); color: var(--warn); }
+  .sev.low  { background: rgba(94,234,212,.10); color: var(--accent-2); }
+
+  /* Two-col text */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 28px; }
+  .panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+  .panel h4 { margin: 0 0 10px; font-size: 14px; color: var(--accent-2); text-transform: uppercase; letter-spacing: .08em; }
+
+  /* Roadmap */
+  .road { margin-top: 32px; }
+  .road-row { display: grid; grid-template-columns: 110px 1fr; gap: 24px; padding: 18px 0; border-bottom: 1px solid var(--border-soft); }
+  .road-row:last-child { border: none; }
+  .road-phase { font-family: "SF Mono", monospace; font-size: 12px; color: var(--accent-3); }
+  .road-row h4 { margin: 0 0 4px; font-size: 15px; }
+  .road-row p { margin: 0; color: var(--fg-dim); font-size: 13px; }
+  .road-row .meta { font-size: 11px; color: var(--fg-mute); margin-top: 6px; font-family: "SF Mono", monospace; }
+
+  /* Footer */
+  footer { padding: 40px 32px; text-align: center; color: var(--fg-mute); font-size: 13px; }
+  footer a { color: var(--fg-dim); }
+
+  /* Mobile */
+  @media (max-width: 900px) {
+    .hero h1 { font-size: 38px; }
+    .hero-stats, .arch, .ms-grid, .two-col { grid-template-columns: 1fr; }
+    .arch-arrow { transform: rotate(90deg); padding: 8px 0; }
+    .pipe { grid-template-columns: 1fr; }
+    .pipe-arrow { transform: rotate(90deg); }
+    nav.top .links { display: none; }
+    section { padding: 56px 20px; }
+    .hero { padding: 80px 20px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============= NAV ============= -->
+<nav class="top">
+  <div class="inner">
+    <div class="brand"><span class="brand-mark"></span>Experience Pool</div>
+    <div class="links">
+      <a href="#arch">架构</a>
+      <a href="#pipeline">流水线</a>
+      <a href="#milestones">里程碑</a>
+      <a href="#cli">CLI</a>
+      <a href="#sanitizer">脱敏</a>
+      <a href="#roadmap">Roadmap</a>
+    </div>
+    <span class="badge">v0.6 · M1–M9 done</span>
+  </div>
+</nav>
+
+<!-- ============= HERO ============= -->
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">内网 Agent 共享大脑 · Internal Knowledge Loop</div>
+    <h1>让一队 Claude Code agent<br/>互相<em>学习</em>、互相<em>变强</em></h1>
+    <p class="sub">
+      Experience Pool 是为 100+ 内网 agent 设计的"经验池"——
+      自动捕获 trajectory、三层脱敏、5 维 Judge 评分、混合检索、
+      one-hop credit 反向传播。Skill / npm CLI / FastAPI 三件套，
+      SQLite 单机即可上线。
+    </p>
+    <div class="pills">
+      <span class="pill"><span class="dot"></span>54/55 core tests</span>
+      <span class="pill"><span class="dot"></span>9/9 gateway tests</span>
+      <span class="pill"><span class="dot"></span>3/3 cli tests</span>
+      <span class="pill"><span class="dot"></span>UI build green</span>
+      <span class="pill warn"><span class="dot"></span>Phase A 部署中</span>
+      <span class="pill">Apache 2.0</span>
+    </div>
+    <div class="hero-stats">
+      <div class="stat"><div class="num">~6.5k</div><div class="label">代码行数</div></div>
+      <div class="stat"><div class="num">9</div><div class="label">里程碑全部完成</div></div>
+      <div class="stat"><div class="num">5 维</div><div class="label">Judge 奖励</div></div>
+      <div class="stat"><div class="num">3 层</div><div class="label">Sanitizer 防护</div></div>
+    </div>
+  </div>
+</header>
+
+<!-- ============= PROBLEM ============= -->
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Why · 我们要解决什么</div>
+    <h2>同一个 bug，被 100 个 agent 各自重新踩一遍</h2>
+    <p class="lead">
+      Agent A 周二调通了 Kafka offset reset；周四 Agent B 撞到同样的问题，从零开始。
+      Agent C 写了一个真正能跑的 CSV 聚合 playbook；隔三个工位的 Agent D 又重写了一遍。
+      团队<strong>没有任何机制</strong>把已经成功的经验沉淀下来——直到现在。
+    </p>
+
+    <div class="two-col">
+      <div class="panel">
+        <h4>痛点</h4>
+        <ul style="padding-left:18px;color:var(--fg-dim);font-size:14px;">
+          <li>没有共享：每个 session 结束后，所有上下文随之消失</li>
+          <li>没有评分：哪些 playbook 真的好用？只有作者自己说</li>
+          <li>没有脱敏：直接共享有泄露 secret / PII 的风险</li>
+          <li>没有可信传播：知识在群里转发，版本/sha256 都对不齐</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h4>这个项目给的</h4>
+        <ul style="padding-left:18px;color:var(--fg-dim);font-size:14px;">
+          <li>每完成一个任务自动 push 到池里（Stop hook + npm CLI）</li>
+          <li>Judge 给每条经验打 5 维分；下游成功会反向加权父经验</li>
+          <li>3 层 sanitizer 把 secret/PII 拦在 extractor 之前</li>
+          <li>Skill bundle 上传后，sha256 校验确保到处都跑同一份</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= ARCHITECTURE ============= -->
+<section id="arch">
+  <div class="wrap">
+    <div class="eyebrow">Architecture · 三件套</div>
+    <h2>Skill ｜ npm CLI ｜ FastAPI Server</h2>
+    <p class="lead">
+      产品由三个相互独立、版本独立分发的部分组成。
+      每个部分都可以单独升级，HMAC-SHA256 把它们绑在一起。
+    </p>
+
+    <div class="arch">
+      <div class="arch-card">
+        <div class="num">1</div>
+        <span class="tag">Agent 侧</span>
+        <h4>Claude Code Skill</h4>
+        <p><span class="mono">~/.claude/skills/experience-pool/SKILL.md</span> · agent 触发关键词时自动调用 npm CLI</p>
+        <div class="stack">
+          <span class="chip">SKILL.md</span>
+          <span class="chip">install.sh</span>
+          <span class="chip">auto-upload</span>
+        </div>
+      </div>
+      <div class="arch-arrow">
+        <svg viewBox="0 0 60 24" fill="none"><path d="M0 12h54m0 0l-6-6m6 6l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <div class="arch-card">
+        <div class="num">2</div>
+        <span class="tag">npm 全局分发</span>
+        <h4>@experience-pool/cli</h4>
+        <p>TypeScript 实现的 HTTP 客户端，HMAC-SHA256 签名每个请求；agent 通过 <span class="mono">npm i -g</span> 拿到最新版本</p>
+        <div class="stack">
+          <span class="chip">commander</span>
+          <span class="chip">node:crypto</span>
+          <span class="chip green">tsc</span>
+        </div>
+      </div>
+      <div class="arch-arrow">
+        <svg viewBox="0 0 60 24" fill="none"><path d="M0 12h54m0 0l-6-6m6 6l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <div class="arch-card">
+        <div class="num">3</div>
+        <span class="tag">单进程后端</span>
+        <h4>FastAPI Server</h4>
+        <p>SQLite (WAL) + 文件系统存储，单 binary、systemd 一行启动；逻辑全部在 <span class="mono">ExperiencePool</span> 类</p>
+        <div class="stack">
+          <span class="chip">FastAPI</span>
+          <span class="chip">SQLite + FTS5</span>
+          <span class="chip green">claude -p</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col" style="margin-top: 36px;">
+      <div class="panel">
+        <h4>关键设计取舍</h4>
+        <ul style="padding-left:18px;color:var(--fg-dim);font-size:14px;">
+          <li><strong>Feedback 是派生的，不是声明的。</strong> push 时只声明 <span class="chip" style="font-size:10px;padding:1px 6px">parent_experience_ids</span>；CreditAssigner 在子奖励到达时自动反向更新父 Q 值</li>
+          <li><strong>One-hop credit。</strong> 只回传一跳——避免 UI 编辑产生反向边时形成环</li>
+          <li><strong>Credit before dedup。</strong> 即使 child 最终被合并，它声明的 parent 也已先拿到 credit</li>
+          <li><strong>Skill 与 Experience 同等待遇。</strong> Skill 也走 one-hop Q 更新，让池子学会"哪些 Skill 真的有用"</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h4>为什么 SQLite 就够</h4>
+        <ul style="padding-left:18px;color:var(--fg-dim);font-size:14px;">
+          <li>WAL 模式 + 单进程 FastAPI，~50 并发 agent 无压力</li>
+          <li>Vector + FTS5 在同一个 DB 里——不要 Qdrant、不要 Elasticsearch</li>
+          <li>UI 用 <span class="mono">better-sqlite3</span> 直连 DB，无需重复后端</li>
+          <li>真要扩——<span class="mono">gateway/</span> 已有 Postgres + Redis Streams + Qdrant 版本，逻辑完全复用</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= PIPELINE ============= -->
+<section id="pipeline">
+  <div class="wrap">
+    <div class="eyebrow">Pipeline · push 一条经验都发生了什么</div>
+    <h2>从 trajectory 到可被检索的"经验卡片"</h2>
+    <p class="lead">
+      ExperiencePool 类把整条流水线写在一个进程里：
+      sanitize → extract (双跑) → judge (5 维, cost-aware) → embed → dedup → credit。
+      整链路在 Sonnet 上 p95 &lt; 90s。
+    </p>
+
+    <div class="pipe">
+      <div class="pipe-box ingress">
+        <div class="step-name">CLI</div>
+        <div class="step-meta">HMAC POST</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box">
+        <div class="step-name">Sanitizer</div>
+        <div class="step-meta">3-layer</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box">
+        <div class="step-name">Extractor</div>
+        <div class="step-meta">double-run</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box">
+        <div class="step-name">Judge</div>
+        <div class="step-meta">5-dim cost-aware</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box">
+        <div class="step-name">Embed + Dedup</div>
+        <div class="step-meta">vec + FTS5</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box">
+        <div class="step-name">Credit</div>
+        <div class="step-meta">α·c · 1-hop</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box egress">
+        <div class="step-name">SQLite</div>
+        <div class="step-meta">audit_log</div>
+      </div>
+    </div>
+
+    <div class="two-col" style="margin-top: 36px;">
+      <div class="panel">
+        <h4>5 维 Judge</h4>
+        <p style="margin:0 0 10px;color:var(--fg-dim);font-size:13px;">每条经验在 <span class="mono">[-1, 1]</span> 上得到 5 维连续奖励：</p>
+        <ul style="padding-left:18px;color:var(--fg-dim);font-size:13px;">
+          <li><strong>Outcome</strong> — 任务最终是否真的解决</li>
+          <li><strong>Intent</strong> — agent 的意图是否清晰、对症</li>
+          <li><strong>Execution</strong> — 中间步骤是否高效、少回头</li>
+          <li><strong>Orchestration</strong> — 工具/子任务编排合理性</li>
+          <li><strong>Expression</strong> — 输出是否结构化、可复用</li>
+        </ul>
+        <p style="margin:14px 0 0;font-size:12px;color:var(--fg-mute);">导出 Parquet 时再离散化为 <span class="mono">{-1, 0, 1}</span></p>
+      </div>
+      <div class="panel">
+        <h4>Cost-aware Judge 路由</h4>
+        <pre class="code" style="margin:0;"><span class="c1"># sensitivity=low AND len(traj) ≤ 4</span>
+<span class="v1">→</span> Haiku · <span class="s1">single-shot</span>
+
+<span class="c1"># sensitivity=high OR reuse_count ≥ 10</span>
+<span class="v1">→</span> Sonnet · <span class="s1">3-shot self-consistency</span>
+<span class="v1">+</span> Haiku ensemble cross-check
+
+<span class="c1"># default</span>
+<span class="v1">→</span> Haiku · <span class="s1">3-shot self-consistency</span></pre>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top: 24px;">
+      <h4>检索打分公式</h4>
+      <pre class="code" style="margin:0;font-size:14px;">score = <span class="n1">0.55</span>·sim_z + <span class="n1">0.35</span>·q_z + <span class="n1">0.10</span>·UCB
+sim   = <span class="n1">0.7</span>·vector_cosine + <span class="n1">0.3</span>·fts5_bm25_signal</pre>
+      <p style="margin:10px 0 0;font-size:12px;color:var(--fg-mute);">
+        Similarity / Q 都做 z-score 归一化；UCB 提供探索项；FTS5 BM25 在确定性 hash embedding 上补"kafka" 这种 lexical match。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============= MILESTONES ============= -->
+<section id="milestones">
+  <div class="wrap">
+    <div class="eyebrow">Milestones · M1 → M9 全绿</div>
+    <h2>9 个里程碑，每个都有真 Claude CLI 端到端验证</h2>
+
+    <div class="ms-grid">
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M1</span><span class="ms-status">done</span></div>
+        <h3>骨架 + 内联流水线</h3>
+        <p>Monorepo 布局；ExperiencePool 类把全流程包在一个进程里</p>
+        <ul><li>SQLite schema · FTS5 触发器</li><li>experiences / rewards / edges / q_updates</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M2</span><span class="ms-status">done</span></div>
+        <h3>双跑 Extractor + 5 维 Judge</h3>
+        <p>结构指纹 diff &gt; 0.5 标 unstable；Cost-aware 路由</p>
+        <ul><li>A/B 并行 extractor</li><li>Mixed ranking 从第一天开启</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M3</span><span class="ms-status">done</span></div>
+        <h3>3 层 Sanitizer</h3>
+        <p>regex 规则 → 启发式 PII → LLM 业务敏感度分类</p>
+        <ul><li>YAML 驱动的 25+ 规则</li><li>raw vs sanitized 双副本保留</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M4</span><span class="ms-status">done</span></div>
+        <h3>Next.js 15 审核 UI</h3>
+        <p>7 个路由 · 5 个 tab · server actions 直连 SQLite</p>
+        <ul><li>Card / Trajectory / Lineage / Skills / Audit</li><li>approve / reject / edit / re-judge</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M5/M8</span><span class="ms-status">done</span></div>
+        <h3>监控 + Drift 检测</h3>
+        <p>dashboard_stats · reuse_leaderboard · judge_drift</p>
+        <ul><li>Q-scalar 直方图 / 分位</li><li>MAD &gt; 0.15 触发告警</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M6</span><span class="ms-status">done</span></div>
+        <h3>Parquet 训练导出</h3>
+        <p>Hive 分区 · 36 列 schema · 可选 PyTorch Dataset</p>
+        <ul><li>task_type=&lt;X&gt;/date=YYYY-MM-DD/data.parquet</li><li>5 维连续 + 5 维离散 int8</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M7</span><span class="ms-status">done</span></div>
+        <h3>身份 + ACL</h3>
+        <p>HMAC-SHA256 · private / team / org · fail-closed</p>
+        <ul><li>0600 模式凭证文件</li><li>denied-read 写 audit_log</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M8</span><span class="ms-status">done</span></div>
+        <h3>Dashboard / Leaderboard</h3>
+        <p>状态分布 · reuse 排行 · drift baseline + check</p>
+        <ul><li>expctl dashboard / leaderboard</li><li>drift-record / drift-check</li></ul>
+      </div>
+      <div class="ms">
+        <div class="ms-head"><span class="ms-tag">M9</span><span class="ms-status">done</span></div>
+        <h3>Skill Bundle 上传</h3>
+        <p>tar.gz 部署 · sha256 校验 · 与 experience 同等 credit</p>
+        <ul><li>5 MB 总量 / 1 MB 单文件 / 200 文件上限</li><li>tarbomb 防护 · 路径穿越守护</li></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= CLOSED LOOP ============= -->
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Closed Loop · 真 Claude 端到端验证</div>
+    <h2>父子经验的 credit 反向传播</h2>
+    <p class="lead">
+      <span class="mono">scripts/integration_smoke.sh</span> 用真实 <span class="mono">claude -p</span>
+      跑一次完整闭环——sanitizer 拦截 PII、ACL 隔离跨团队、credit 真的把 Q 值往上推。
+    </p>
+
+    <pre class="code">parent push   <span class="v1">→</span> extractor 2-run div=<span class="n1">0.15</span> (stable) <span class="v1">→</span> judge <span class="v1">→</span> q=(<span class="n1">1.0,1.0,0.8,0.7,0.9</span>)
+child push    <span class="v1">→</span> declared parent_experience_ids=[parent]
+              <span class="v1">→</span> extractor div=<span class="n1">0.10</span> <span class="v1">→</span> judge <span class="v1">→</span> q=(<span class="n1">0.9,0.95,0.7,0.75,0.8</span>)
+              <span class="v1">→</span> credit_applied: parents_updated=<span class="n1">1</span>
+parent state  <span class="v1">→</span> q_update_count: <span class="n1">1 → 2</span>
+              <span class="v1">→</span> q_outcome: <span class="n1">1.0 → 0.987</span>  <span class="c1"># α·c=0.13, moved toward child r=0.9</span>
+              <span class="v1">→</span> reuse_count: <span class="n1">1</span>
+search        <span class="v1">→</span> 两条都返回；parent 排名更高 (sim z <span class="n1">0.55</span> vs <span class="n1">-0.55</span>, q z <span class="n1">0.35</span> vs <span class="n1">-0.35</span>)
+audit log     <span class="v1">→</span> push, extract, judge, credit_applied 全部记录</pre>
+  </div>
+</section>
+
+<!-- ============= CLI / USAGE ============= -->
+<section id="cli">
+  <div class="wrap">
+    <div class="eyebrow">Usage · 30 秒上手</div>
+    <h2>从启动 server 到 push 第一条经验</h2>
+
+    <div class="code-tabs">
+      <div class="code-tab active" data-tab="server">① Server</div>
+      <div class="code-tab" data-tab="cli">② CLI</div>
+      <div class="code-tab" data-tab="skill">③ Skill</div>
+      <div class="code-tab" data-tab="search">④ Search</div>
+    </div>
+
+    <div class="code-wrap">
+      <div class="code-block active" data-tab="server">
+<pre class="code"><span class="c1"># 启动 FastAPI server，SQLite 单文件存储</span>
+<span class="v1">cd</span> core
+<span class="v1">uv pip install</span> -e <span class="s1">".[server]"</span>
+
+<span class="v1">EXP_ROOT</span>=<span class="s1">/var/lib/expool</span> <span class="v1">uvicorn</span> exp_core.server:app \
+    --host <span class="s1">0.0.0.0</span> --port <span class="n1">8080</span>
+
+<span class="c1"># 生产环境放 Caddy / nginx 后面</span>
+<span class="c1"># systemd unit 在 deploy/expool.service</span></pre>
+      </div>
+
+      <div class="code-block" data-tab="cli">
+<pre class="code"><span class="c1"># npm 全局安装</span>
+<span class="v1">npm install</span> -g @experience-pool/cli
+
+<span class="c1"># 注册一个 agent 身份（拿 HMAC 密钥）</span>
+<span class="v1">exp register</span> --name alice --team platform
+
+<span class="c1"># 推一条经验</span>
+<span class="v1">exp push</span> \
+    --task csv_analysis \
+    --model claude-sonnet-<span class="n1">4-6</span> \
+    --file traj.json \
+    --uses-skill csv-helper \
+    --parents <span class="s1">"id1,id2"</span></pre>
+      </div>
+
+      <div class="code-block" data-tab="skill">
+<pre class="code"><span class="c1"># 上传一个 Skill bundle (含 SKILL.md)</span>
+<span class="v1">exp push-skill</span> \
+    --bundle ./csv-helper \
+    --sensitivity low \
+    --acl team:platform
+
+<span class="c1"># 在另一台机器上安装回来 (sha256 校验)</span>
+<span class="v1">exp install-skill</span> \
+    --name csv-helper \
+    --target ./vendor/skills/csv-helper
+
+<span class="c1"># 看 Q 值变化</span>
+<span class="v1">exp get-skill</span> --name csv-helper</pre>
+      </div>
+
+      <div class="code-block" data-tab="search">
+<pre class="code"><span class="c1"># 混合检索：similarity + Q + UCB</span>
+<span class="v1">exp search</span> \
+    --q <span class="s1">"rank top regions in tabular data"</span> \
+    --task csv_analysis \
+    --top-k <span class="n1">5</span>
+
+<span class="c1"># 每个结果包含：intent / summary / script / q_breakdown</span>
+<span class="c1"># ACL 在搜索时过滤——非 owner 看不到 private 行</span>
+
+<span class="v1">exp dashboard</span>     <span class="c1"># 看池子总体状态</span>
+<span class="v1">exp leaderboard</span>   <span class="c1"># 看 reuse 排行</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= SANITIZER ============= -->
+<section id="sanitizer">
+  <div class="wrap">
+    <div class="eyebrow">Sanitizer · 三层防护</div>
+    <h2>secret/PII 在 extractor 之前就被拦下</h2>
+    <p class="lead">
+      Layer 1 总是跑（确定性 regex）；Layer 2 在 sensitivity ≠ low 时跑（启发式 PII）；
+      Layer 3 仅在 high 或 Layer 2 命中时跑（LLM 业务敏感度分类）。
+      原始文件保留为 <span class="mono">&lt;id&gt;.raw.json</span>，方便 reviewer diff。
+    </p>
+
+    <table class="san">
+      <thead>
+        <tr><th>类别</th><th>占位符</th><th>严重度</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Email</td><td><span class="mono">&lt;EMAIL&gt;</span></td><td><span class="sev med">medium</span></td><td>RFC 风格邮箱</td></tr>
+        <tr><td>Phone (intl + CN)</td><td><span class="mono">&lt;PHONE&gt;</span></td><td><span class="sev med">medium</span></td><td>含 +86 / 11 位号段</td></tr>
+        <tr><td>IPv4 / IPv6</td><td><span class="mono">&lt;IP&gt;</span></td><td><span class="sev low">low</span></td><td>排除文档保留段</td></tr>
+        <tr><td>Credit Card</td><td><span class="mono">&lt;CARD&gt;</span></td><td><span class="sev high">high</span></td><td>Luhn 校验后才命中</td></tr>
+        <tr><td>AWS Access Key</td><td><span class="mono">&lt;KEY&gt;</span></td><td><span class="sev high">high</span></td><td>AKIA / ASIA 前缀</td></tr>
+        <tr><td>SSH / PEM Block</td><td><span class="mono">&lt;KEY&gt;</span></td><td><span class="sev high">high</span></td><td>包括公私钥与证书</td></tr>
+        <tr><td>Bearer Token</td><td><span class="mono">Bearer &lt;TOKEN&gt;</span></td><td><span class="sev high">high</span></td><td>Authorization 头</td></tr>
+        <tr><td>Stripe / GitHub / OpenAI / Anthropic</td><td><span class="mono">&lt;SECRET&gt;</span></td><td><span class="sev high">high</span></td><td>sk_live_ / ghp_ / sk- / sk-ant-</td></tr>
+        <tr><td>URL with credentials</td><td><span class="mono">https://&lt;USER&gt;:&lt;PASS&gt;@…</span></td><td><span class="sev high">high</span></td><td>basic auth in URL</td></tr>
+        <tr><td>Internal Hostname</td><td><span class="mono">&lt;INTERNAL_HOST&gt;</span></td><td><span class="sev high">high</span></td><td>YAML 可配置</td></tr>
+        <tr><td>Employee ID</td><td><span class="mono">&lt;EMP_ID&gt;</span></td><td><span class="sev high">high</span></td><td>前缀可配置</td></tr>
+      </tbody>
+    </table>
+
+    <p style="margin-top:18px;color:var(--fg-mute);font-size:13px;">
+      高严重度命中（Layer 1 / Layer 3） <span class="v1">→</span> <span class="mono">sanitization_status = human_review</span>
+      <span class="v1">→</span> 强制 <span class="mono">review_status = pending</span>，即便 judge 想 auto-approve 也不行。
+    </p>
+  </div>
+</section>
+
+<!-- ============= STACK ============= -->
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Layout · Repo 结构</div>
+    <h2>每个目录是一个独立可发版的产物</h2>
+
+    <pre class="code" style="font-size:13px;">experience-pool/
+├── <span class="v1">core/</span>                     <span class="c1"># Standalone Python · ExperiencePool + expctl + FastAPI server</span>
+│   ├── exp_core/
+│   │   ├── pool.py           <span class="c1"># 内联流水线主类</span>
+│   │   ├── server.py         <span class="c1"># 生产 binary (FastAPI)</span>
+│   │   ├── skills.py         <span class="c1"># M9 skill bundle</span>
+│   │   ├── sanitize.py       <span class="c1"># 三层脱敏</span>
+│   │   ├── prompts.py        <span class="c1"># Extractor + judge 提示词</span>
+│   │   ├── llm.py            <span class="c1"># claude -p subprocess + mock</span>
+│   │   ├── ranking.py        <span class="c1"># sim_z + q_z + UCB</span>
+│   │   ├── fts.py · identity.py · acl_search.py · monitoring.py · export.py
+│   │   └── cli.py            <span class="c1"># expctl (19 子命令)</span>
+│   └── tests/                <span class="c1"># 54 tests</span>
+├── <span class="v1">cli/</span>                      <span class="c1"># npm: @experience-pool/cli (TypeScript)</span>
+├── <span class="v1">ui/</span>                       <span class="c1"># Next.js 15 review UI</span>
+├── <span class="v1">gateway/</span>                  <span class="c1"># 可选：Postgres + Redis Streams 大规模版</span>
+├── <span class="v1">workers/</span>                  <span class="c1"># 可选：分布式 worker 套件</span>
+├── <span class="v1">infra/</span>                    <span class="c1"># docker-compose.dev.yml + schema</span>
+├── <span class="v1">dist/claude-skill/</span>        <span class="c1"># 实际下发到 ~/.claude/skills/</span>
+├── <span class="v1">deploy/</span>                   <span class="c1"># systemd / Caddy / backup / docker-compose</span>
+└── <span class="v1">scripts/</span>                  <span class="c1"># integration_smoke.sh · verify_all.sh</span></pre>
+  </div>
+</section>
+
+<!-- ============= ROADMAP ============= -->
+<section id="roadmap">
+  <div class="wrap">
+    <div class="eyebrow">Roadmap · 下一步要做什么</div>
+    <h2>v0.7 内网部署 · v0.8 真实 embedding · v1.0 加固</h2>
+    <p class="lead">应用层已经 ready；剩下的是部署层 / 模型层 / 治理层的工作。</p>
+
+    <div class="road">
+      <div class="road-row">
+        <div class="road-phase">Phase A · 🔥</div>
+        <div>
+          <h4>内网生产部署</h4>
+          <p>systemd unit · 备份 cron · slowapi 限流 · 真 healthz · disk water-mark · structlog · Caddy 反代</p>
+          <div class="meta">~2 hours · v0.7 gate</div>
+        </div>
+      </div>
+      <div class="road-row">
+        <div class="road-phase">Phase B · ⚙️</div>
+        <div>
+          <h4>真实 Embedding 模型</h4>
+          <p>用 BGE-large-zh / jina-v3 / text-embedding-3-large 替换 hash-trigram stub；<span class="mono">vectors.kind</span> 已经预留 model_version 字段</p>
+          <div class="meta">~1 hour 接入 · 一次性算力 · v0.8 gate</div>
+        </div>
+      </div>
+      <div class="road-row">
+        <div class="road-phase">Phase C · ⚙️</div>
+        <div>
+          <h4>治理层加固</h4>
+          <p>Reviewer RBAC · 每团队 quota · 长 session 切片 (10MB body cap) · 跨 VPN 暴露时加 TLS + replay protection</p>
+          <div class="meta">v1.0 gate</div>
+        </div>
+      </div>
+      <div class="road-row">
+        <div class="road-phase">Phase D · 🧪</div>
+        <div>
+          <h4>Postgres 横向扩展</h4>
+          <p>当并发 agent 超过 ~50 时切换：gateway/ + workers/ 已经写好，只需切换部署模式</p>
+          <div class="meta">代码就绪 · 看实际负载触发</div>
+        </div>
+      </div>
+      <div class="road-row">
+        <div class="road-phase">Phase E · 🧪</div>
+        <div>
+          <h4>Skill 版本化 UX</h4>
+          <p>UI 上看版本 diff、回滚、compatible-with 标签；当前 schema 已支持 (name, version) 复合键</p>
+          <div class="meta">取决于实际使用密度</div>
+        </div>
+      </div>
+      <div class="road-row">
+        <div class="road-phase">Phase F · 🧪</div>
+        <div>
+          <h4>跨组织联邦</h4>
+          <p>不同子公司 / 子团队的 pool 互相对接；签名互信 + 选择性同步</p>
+          <div class="meta">研究阶段</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= STATUS ============= -->
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Status · 当前快照</div>
+    <h2>各层测试状态</h2>
+
+    <div style="margin-top: 24px; overflow-x:auto;">
+      <table class="san" style="min-width:600px;">
+        <thead>
+          <tr><th>Layer</th><th>状态</th><th>测试</th><th>规模</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="mono">core/</span> Python core</td><td><span class="sev low">✅ done</span></td><td>54 / 55 (1 torch optional skipped)</td><td>~3,300 行</td></tr>
+          <tr><td><span class="mono">core/exp_core/server.py</span></td><td><span class="sev low">✅ done</span></td><td>manual e2e verified</td><td>~210 行</td></tr>
+          <tr><td><span class="mono">gateway/</span> Postgres-backed</td><td><span class="sev low">✅ optional</span></td><td>9 / 9</td><td>~600 行</td></tr>
+          <tr><td><span class="mono">workers/</span> Redis Streams</td><td><span class="sev low">✅ optional</span></td><td>included in gateway</td><td>~500 行</td></tr>
+          <tr><td><span class="mono">ui/</span> Next.js 15</td><td><span class="sev low">✅ done</span></td><td>build passes</td><td>~1,400 行</td></tr>
+          <tr><td><span class="mono">cli/</span> npm TypeScript</td><td><span class="sev low">✅ done</span></td><td>3 / 3</td><td>~400 行</td></tr>
+          <tr><td><span class="mono">dist/claude-skill/</span></td><td><span class="sev low">✅ done</span></td><td>available-skills 检查</td><td>~70 行</td></tr>
+          <tr><td><span class="mono">scripts/</span> 集成验证</td><td><span class="sev low">✅ done</span></td><td>real-Claude smoke</td><td>~250 行</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="two-col" style="margin-top:32px;">
+      <div class="panel">
+        <h4>已验证端到端（real claude CLI）</h4>
+        <ul style="padding-left:18px;color:var(--fg-dim);font-size:13px;">
+          <li>两 agent 跨团队注册，HMAC 签名往来</li>
+          <li>Alice push-skill → Bob (其他团队) 通过 acl=org 找到 → install 后 sha256 完全一致</li>
+          <li>篡改 secret → 401 bad signature</li>
+          <li>PII trajectory 命中 AKIA + email + card + phone → human_review</li>
+          <li>Parent + child push → child reward 反向更新 parent Q 值，q_update_count 1→2</li>
+          <li>跨 team ACL：Bob (data) 看不到 Alice (platform) 的行；直接 fetch 写 read_denied audit</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h4>下一步要做的内网部署清单</h4>
+        <ul style="padding-left:18px;color:var(--fg-dim);font-size:13px;">
+          <li>systemd unit (15 min)</li>
+          <li>backup cron (15 min)</li>
+          <li>slowapi 限流 (20 min)</li>
+          <li>真实 /healthz 探针 (15 min)</li>
+          <li>disk water-mark + auto-archive (1 h)</li>
+          <li>Caddy / nginx 反代 (15 min)</li>
+          <li>logrotate (10 min)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>
+    Experience Pool · v0.6 · M1–M9 done<br/>
+    Apache 2.0 · <a href="https://github.com/xhh678876/experience-pool">github.com/xhh678876/experience-pool</a>
+  </p>
+  <p style="opacity:.6;margin-top:6px;">本预览页基于 PRD.md / STATUS.md / ROADMAP.md / README.md 自动整合生成</p>
+</footer>
+
+<script>
+  // tab switching
+  document.querySelectorAll('.code-tab').forEach(t => {
+    t.addEventListener('click', () => {
+      const k = t.dataset.tab;
+      document.querySelectorAll('.code-tab').forEach(x => x.classList.toggle('active', x.dataset.tab === k));
+      document.querySelectorAll('.code-block').forEach(x => x.classList.toggle('active', x.dataset.tab === k));
+    });
+  });
+</script>
+</body>
+</html>

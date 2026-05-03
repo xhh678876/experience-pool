@@ -1,0 +1,21 @@
+[Unit]
+Description=Experience Pool API
+After=network.target
+
+[Service]
+Type=simple
+User=expool
+Group=expool
+WorkingDirectory=/opt/experience-pool/core
+Environment=EXP_ROOT=/var/lib/expool
+Environment=EXP_RATE_LIMIT_ENABLED=1
+Environment=EXP_RATE_PUSH_PER_MIN=60
+Environment=EXP_RATE_SEARCH_PER_MIN=1000
+Environment=EXP_RATE_PUSH_SKILL_PER_MIN=10
+ExecStart=/usr/local/bin/uv run --extra server uvicorn exp_core.server:app --host 127.0.0.1 --port 8080 --workers 1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

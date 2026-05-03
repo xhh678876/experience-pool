@@ -278,6 +278,7 @@ def cmd_prepare(args) -> int:
 
 def cmd_push_lite(args) -> int:
     pool = ExperiencePool(_config())
+    trajectory: list[dict] | None = None
     if args.card == "-":
         card_dict = json.loads(sys.stdin.read())
     elif args.card:
@@ -285,7 +286,11 @@ def cmd_push_lite(args) -> int:
     else:
         # Build it from the trajectory in one shot.
         traj_payload = json.loads(Path(args.file).read_text())
-        trajectory = traj_payload.get("trajectory", traj_payload) if isinstance(traj_payload, dict) else traj_payload
+        trajectory = (
+            traj_payload.get("trajectory", traj_payload)
+            if isinstance(traj_payload, dict)
+            else traj_payload
+        )
         card_dict = lite_mod.prepare_local(
             trajectory,
             use_llm=args.use_llm,
@@ -305,9 +310,13 @@ def cmd_push_lite(args) -> int:
         tags=card_dict.get("tags", args.tag),
         redactions=card_dict.get("redactions", {}),
     )
+    # By default include the raw trajectory so the Trajectory tab has content.
+    # --no-trace drops it (back to the old card-only behavior).
     result = lite_mod.push_lite(
         pool.conn, rules=pool._sanitize_rules,
         agent_name=args.agent, card=card,
+        trajectory=None if getattr(args, "no_trace", False) else trajectory,
+        trajectories_dir=pool.config.trajectories_dir,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
@@ -502,6 +511,8 @@ def main() -> int:
     ppl.add_argument("--acl", default="private", help="private | team:<X> | public")
     ppl.add_argument("--tag", action="append", default=[])
     ppl.add_argument("--use-llm", action="store_true")
+    ppl.add_argument("--no-trace", action="store_true",
+                     help="Send only the compressed card; drop the raw trajectory")
     ppl.set_defaults(func=cmd_push_lite)
 
     psl = sub.add_parser("search-lite", help="v0 lite: pure cosine search, ACL-filtered")

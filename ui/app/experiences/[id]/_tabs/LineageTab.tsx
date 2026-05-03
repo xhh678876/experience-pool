@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { EdgeRow, ExperienceListItem } from "@/lib/types";
@@ -29,16 +29,15 @@ export function LineageTab({
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Lineage graph</CardTitle>
+          <CardTitle>血缘图</CardTitle>
           <p className="text-xs text-muted-foreground mt-1">
-            Parents on the left flowed credit into this node. Children on the right received it
-            from this node.
+            左侧父节点向当前节点贡献信用，右侧子节点从当前节点继承信用。
           </p>
         </CardHeader>
         <CardContent>
           {parentNodes.length === 0 && childNodes.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              This experience is isolated. No declared parents and no derived children.
+              这条经验暂无声明父节点，也没有派生子节点。
             </p>
           ) : (
             <LineageSvg
@@ -53,8 +52,8 @@ export function LineageTab({
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <NodeList title="Parents" rows={parentNodes.map((x) => ({ ...x.node, edge: x.edge, dir: "in" as const }))} />
-        <NodeList title="Children" rows={childNodes.map((x) => ({ ...x.node, edge: x.edge, dir: "out" as const }))} />
+        <NodeList title="父节点" rows={parentNodes.map((x) => ({ ...x.node, edge: x.edge, dir: "in" as const }))} />
+        <NodeList title="子节点" rows={childNodes.map((x) => ({ ...x.node, edge: x.edge, dir: "out" as const }))} />
       </div>
     </div>
   );
@@ -74,7 +73,7 @@ function NodeList({
       </CardHeader>
       <CardContent className="space-y-3">
         {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">None.</p>
+          <p className="text-sm text-muted-foreground">无。</p>
         ) : (
           rows.map((r) => (
             <Link
@@ -89,11 +88,11 @@ function NodeList({
                 {r.dir === "out" ? (
                   r.edge.credit_applied ? (
                     <Badge className="border-green-300 bg-green-50 text-green-900 dark:bg-green-950 dark:text-green-200 dark:border-green-800">
-                      credit applied
+                      已回流
                     </Badge>
                   ) : (
                     <Badge className="border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
-                      credit pending
+                      待回流
                     </Badge>
                   )
                 ) : null}
@@ -231,7 +230,7 @@ function LineageSvg({
                   : "fill-amber-600 text-[10px]"
               }
             >
-              {c.edge.credit_applied ? "credit applied" : "credit pending"}
+              {c.edge.credit_applied ? "已回流" : "待回流"}
             </text>
           </g>
         ))}

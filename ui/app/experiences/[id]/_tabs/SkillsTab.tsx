@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,10 +14,9 @@ export function SkillsTab({ experienceId }: SkillsTabProps) {
     return (
       <Card>
         <CardContent className="py-10 text-center text-sm text-muted-foreground">
-          This experience didn&apos;t declare any skill usage. To link skills,
-          push with{" "}
+          这条经验没有声明技能使用。后续可在上传时追加{" "}
           <code className="rounded bg-muted px-1.5 py-0.5">--uses-skill foo</code>
-          .
+          进行关联。
         </CardContent>
       </Card>
     );
@@ -26,7 +25,7 @@ export function SkillsTab({ experienceId }: SkillsTabProps) {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
-          Skills used by this experience ({uses.length})
+          本经验使用的技能 ({uses.length})
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
@@ -45,12 +44,12 @@ export function SkillsTab({ experienceId }: SkillsTabProps) {
               </span>
             </Link>
             <span className="flex-1 truncate text-muted-foreground">
-              {u.description ?? "(no description)"}
+              {u.description ?? "无描述"}
             </span>
             {u.credit_applied ? (
-              <Badge variant="secondary">credit applied</Badge>
+              <Badge variant="secondary">已回流</Badge>
             ) : (
-              <Badge variant="outline">credit pending</Badge>
+              <Badge variant="outline">待回流</Badge>
             )}
           </div>
         ))}

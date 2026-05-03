@@ -95,6 +95,73 @@ CREATE TABLE IF NOT EXISTS experience_edges (
     FOREIGN KEY(child_id) REFERENCES experiences(experience_id)
 );
 
+-- Per-turn rewards (synergy schema: 5 dims × {-1, 0, +1} + confidence + reason).
+-- Different from `rewards` (trajectory-level summary) — this is per assistant
+-- turn, with the judge_model in the PK so multiple judges can coexist.
+CREATE TABLE IF NOT EXISTS turn_rewards (
+    experience_id    TEXT NOT NULL,
+    turn_index       INTEGER NOT NULL,
+    user_turn_index  INTEGER,
+    r_outcome        INTEGER NOT NULL,
+    r_intent         INTEGER NOT NULL,
+    r_execution      INTEGER NOT NULL,
+    r_orchestration  INTEGER NOT NULL,
+    r_expression     INTEGER NOT NULL,
+    confidence       REAL NOT NULL,
+    reason           TEXT,
+    judge_model      TEXT NOT NULL,
+    judge_backend    TEXT NOT NULL DEFAULT 'unknown',
+    annotated_at     TEXT NOT NULL,
+    annotated_by     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (experience_id, turn_index, judge_model),
+    FOREIGN KEY(experience_id) REFERENCES experiences(experience_id)
+);
+CREATE INDEX IF NOT EXISTS idx_turn_rewards_exp ON turn_rewards(experience_id);
+CREATE INDEX IF NOT EXISTS idx_turn_rewards_model ON turn_rewards(judge_model);
+
+-- Content fingerprint for idempotent push. Borrowed from
+-- modelscope/ultron Trajectory Hub — fingerprint = first 16 hex of
+-- SHA-256(role + content) over the trajectory. Re-uploading the same
+-- content returns the existing experience_id without writing a new row.
+CREATE TABLE IF NOT EXISTS content_fingerprints (
+    fingerprint   TEXT NOT NULL,
+    experience_id TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (fingerprint, agent_id),
+    FOREIGN KEY(experience_id) REFERENCES experiences(experience_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fp_exp ON content_fingerprints(experience_id);
+
+-- Knowledge clusters (Ultron-style skill crystallization). Each cluster
+-- tracks a semantic region in embedding space; once it accumulates enough
+-- members it crystallizes into a workflow skill.
+CREATE TABLE IF NOT EXISTS knowledge_clusters (
+    cluster_id            TEXT PRIMARY KEY,
+    label                 TEXT,
+    centroid_blob         BLOB NOT NULL,
+    centroid_dim          INTEGER NOT NULL,
+    member_count          INTEGER NOT NULL DEFAULT 0,
+    new_since_crystallize INTEGER NOT NULL DEFAULT 0,
+    crystallized_skill_id TEXT,
+    last_crystallized_at  TEXT,
+    last_structure_score  REAL,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cluster_skill ON knowledge_clusters(crystallized_skill_id);
+
+CREATE TABLE IF NOT EXISTS cluster_membership (
+    cluster_id    TEXT NOT NULL,
+    experience_id TEXT NOT NULL,
+    similarity    REAL NOT NULL,
+    added_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (cluster_id, experience_id),
+    FOREIGN KEY(cluster_id) REFERENCES knowledge_clusters(cluster_id),
+    FOREIGN KEY(experience_id) REFERENCES experiences(experience_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cmember_exp ON cluster_membership(experience_id);
+
 CREATE TABLE IF NOT EXISTS q_updates (
     update_id TEXT PRIMARY KEY,
     experience_id TEXT NOT NULL,

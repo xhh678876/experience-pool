@@ -28,10 +28,9 @@ export default async function LoginPage() {
     <div className="max-w-md mx-auto">
       <Card>
         <CardHeader>
-          <CardTitle>Sign in as reviewer</CardTitle>
+          <CardTitle>切换审阅身份</CardTitle>
           <CardDescription>
-            No password required. The name is recorded in the audit log against any actions you
-            take. Leave empty to clear.
+            这里不做密码校验，只把审阅人名称写入 cookie，并记录到后续操作审计里。留空可清除。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -39,11 +38,11 @@ export default async function LoginPage() {
             <Input
               name="name"
               defaultValue={current}
-              placeholder="e.g. alice"
+              placeholder="例如：alice"
               autoFocus
             />
             <div className="flex justify-end">
-              <Button type="submit">Save</Button>
+              <Button type="submit">保存</Button>
             </div>
           </form>
         </CardContent>

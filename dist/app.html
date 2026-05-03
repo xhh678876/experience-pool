@@ -1,0 +1,1135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Experience Pool — Console</title>
+<style>
+  :root {
+    --bg: #0b0d12; --bg-elev: #11141b; --bg-card: #161a23;
+    --border: #232734; --border-soft: #1c2030;
+    --fg: #e6e8ee; --fg-dim: #9097a8; --fg-mute: #6a7184;
+    --accent: #7c9cff; --accent-2: #5eead4; --accent-3: #f6c177;
+    --danger: #f47174; --ok: #4ade80; --warn: #fbbf24;
+    --code-bg: #0e1117;
+    --grad: linear-gradient(135deg, #7c9cff 0%, #5eead4 100%);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    display: flex; min-height: 100vh;
+  }
+  code, pre, .mono { font-family: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Sidebar */
+  aside.side {
+    width: 240px; flex-shrink: 0;
+    background: var(--bg-elev); border-right: 1px solid var(--border-soft);
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .brand {
+    padding: 22px 20px 18px; border-bottom: 1px solid var(--border-soft);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .brand-mark { width: 26px; height: 26px; border-radius: 7px; background: var(--grad); }
+  .brand-name { font-weight: 700; font-size: 15px; letter-spacing: -.01em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .brand-tag { font-size: 10px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: .12em; }
+  .nav { padding: 16px 10px; flex: 1; }
+  .nav .group { font-size: 10px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: .12em; padding: 14px 10px 6px; }
+  .nav button {
+    display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px;
+    border: none; background: transparent; color: var(--fg-dim); font-size: 14px;
+    cursor: pointer; border-radius: 8px; text-align: left; font-family: inherit;
+    transition: all .15s;
+  }
+  .nav button:hover { background: var(--bg-card); color: var(--fg); }
+  .nav button.active { background: rgba(124,156,255,.10); color: var(--accent); border: 1px solid rgba(124,156,255,.22); }
+  .nav button .icon { width: 16px; height: 16px; flex-shrink: 0; opacity: .8; }
+  .side-foot {
+    padding: 14px 18px; border-top: 1px solid var(--border-soft);
+    font-size: 11px; color: var(--fg-mute); display: flex; flex-direction: column; gap: 4px;
+  }
+  .side-foot .row { display: flex; justify-content: space-between; }
+  .side-foot .ok { color: var(--ok); }
+
+  /* Main */
+  main { flex: 1; min-width: 0; }
+  header.bar {
+    padding: 18px 32px; border-bottom: 1px solid var(--border-soft);
+    display: flex; align-items: center; gap: 16px;
+    background: rgba(11,13,18,.72); backdrop-filter: blur(10px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header.bar h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header.bar .sub { color: var(--fg-mute); font-size: 13px; }
+  header.bar .actions { margin-left: auto; display: flex; gap: 8px; }
+  .page { padding: 28px 32px; }
+
+  /* Buttons */
+  button.btn {
+    border: 1px solid var(--border); background: var(--bg-card); color: var(--fg);
+    padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    font-family: inherit; transition: all .15s;
+  }
+  button.btn:hover { border-color: var(--accent); }
+  button.btn.primary { background: var(--grad); color: #0b0d12; border: none; font-weight: 600; }
+  button.btn.primary:hover { transform: translateY(-1px); }
+  button.btn.danger { color: var(--danger); border-color: rgba(244,113,116,.30); }
+  button.btn.danger:hover { background: rgba(244,113,116,.10); border-color: var(--danger); }
+  button.btn.ghost { background: transparent; }
+  button.btn:disabled { opacity: .5; cursor: not-allowed; }
+  button.btn .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 99px; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Cards / grids */
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px;
+  }
+  .card h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+  .card .label { font-size: 11px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: .12em; }
+  .card .num {
+    font-size: 28px; font-weight: 700; margin-top: 4px;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .card .sub { font-size: 12px; color: var(--fg-mute); margin-top: 4px; }
+
+  /* Tables */
+  table.t {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  }
+  table.t th, table.t td {
+    padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-soft);
+  }
+  table.t th { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--fg-mute); font-weight: 600; background: var(--bg-elev); }
+  table.t tr:last-child td { border-bottom: none; }
+  table.t tr.row { transition: background .1s; cursor: pointer; }
+  table.t tr.row:hover { background: rgba(124,156,255,.04); }
+  table.t .mono { color: var(--accent); font-size: 12px; }
+  table.t .ellipsis { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Forms */
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 12px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; font-weight: 600; }
+  .field .hint { font-size: 11px; color: var(--fg-mute); margin-top: 4px; }
+  input.in, select.in, textarea.in {
+    width: 100%; padding: 9px 12px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--fg); font-size: 13px; font-family: inherit;
+  }
+  textarea.in { font-family: "SF Mono", monospace; min-height: 140px; resize: vertical; }
+  input.in:focus, select.in:focus, textarea.in:focus { outline: none; border-color: var(--accent); }
+  .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  /* Badges / chips */
+  .chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 99px;
+    background: rgba(124,156,255,.10); color: var(--accent);
+    border: 1px solid rgba(124,156,255,.22); display: inline-flex; align-items: center; gap: 4px;
+  }
+  .chip.green { background: rgba(94,234,212,.10); color: var(--accent-2); border-color: rgba(94,234,212,.22); }
+  .chip.amber { background: rgba(246,193,119,.10); color: var(--accent-3); border-color: rgba(246,193,119,.22); }
+  .chip.danger { background: rgba(244,113,116,.10); color: var(--danger); border-color: rgba(244,113,116,.22); }
+  .chip.muted { background: var(--bg); color: var(--fg-mute); border-color: var(--border); }
+
+  .review-pending { color: var(--accent-3); }
+  .review-approved, .review-auto_approved { color: var(--ok); }
+  .review-rejected { color: var(--danger); }
+
+  /* Code */
+  pre.code {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; font-size: 12px; line-height: 1.55; overflow-x: auto;
+    color: var(--fg-dim);
+  }
+
+  /* Toast */
+  .toast-wrap { position: fixed; right: 24px; top: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; }
+  .toast { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.4); animation: slidein .2s; }
+  .toast.ok { border-left: 3px solid var(--ok); }
+  .toast.err { border-left: 3px solid var(--danger); }
+  .toast.info { border-left: 3px solid var(--accent); }
+  @keyframes slidein { from { transform: translateX(20px); opacity: 0; } }
+
+  /* Modal */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50; display: none; align-items: center; justify-content: center; padding: 20px; }
+  .modal-bg.open { display: flex; }
+  .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; max-width: 1100px; width: 100%; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; }
+  .modal-head { padding: 18px 22px; border-bottom: 1px solid var(--border-soft); display: flex; align-items: center; gap: 12px; }
+  .modal-head h2 { margin: 0; font-size: 16px; }
+  .modal-body { padding: 22px; overflow-y: auto; flex: 1; }
+  .modal-tabs { display: flex; gap: 4px; padding: 0 22px; border-bottom: 1px solid var(--border-soft); }
+  .modal-tab { padding: 10px 14px; cursor: pointer; font-size: 13px; color: var(--fg-mute); border-bottom: 2px solid transparent; }
+  .modal-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+  /* Empty state */
+  .empty { text-align: center; padding: 60px 20px; color: var(--fg-mute); }
+  .empty h3 { color: var(--fg-dim); margin: 0 0 6px; font-weight: 500; }
+
+  /* Misc */
+  .row-flex { display: flex; gap: 8px; align-items: center; }
+  .spacer { flex: 1; }
+  hr { border: none; border-top: 1px solid var(--border-soft); margin: 18px 0; }
+  .section-title { font-size: 12px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: .12em; margin: 24px 0 10px; }
+
+  @media (max-width: 900px) {
+    aside.side { width: 60px; }
+    .brand-name, .brand-tag, .nav .group, .nav button span:not(.icon) { display: none; }
+    .nav button { justify-content: center; }
+    .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .grid-3, .grid-2, .row-2, .row-3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<aside class="side">
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div>
+      <div class="brand-name">Experience Pool</div>
+      <div class="brand-tag">Operator Console</div>
+    </div>
+  </div>
+  <nav class="nav" id="nav">
+    <div class="group">Pool</div>
+    <button data-page="dashboard" class="active"><span class="icon">📊</span><span>Dashboard</span></button>
+    <button data-page="experiences"><span class="icon">📦</span><span>Experiences</span></button>
+    <button data-page="skills"><span class="icon">🧩</span><span>Skills</span></button>
+    <div class="group">Actions</div>
+    <button data-page="push"><span class="icon">⬆</span><span>Push 经验</span></button>
+    <button data-page="search"><span class="icon">🔍</span><span>Search</span></button>
+    <button data-page="upload-skill"><span class="icon">＋</span><span>新建 Skill</span></button>
+    <div class="group">Ops</div>
+    <button data-page="agents"><span class="icon">👥</span><span>Agents</span></button>
+    <button data-page="audit"><span class="icon">📜</span><span>Audit log</span></button>
+    <button data-page="settings"><span class="icon">⚙</span><span>Settings</span></button>
+  </nav>
+  <div class="side-foot">
+    <div class="row"><span>Server</span><span id="meta-status" class="ok">connecting…</span></div>
+    <div class="row"><span>LLM</span><span id="meta-llm" class="mono">…</span></div>
+    <div class="row"><span>Ver</span><span id="meta-version" class="mono">v0.6.0</span></div>
+  </div>
+</aside>
+
+<main>
+  <header class="bar">
+    <div>
+      <h1 id="page-title">Dashboard</h1>
+      <div class="sub" id="page-sub">实时池子状态</div>
+    </div>
+    <div class="actions" id="page-actions"></div>
+  </header>
+  <div class="page" id="page-root"></div>
+</main>
+
+<div class="toast-wrap" id="toasts"></div>
+<div class="modal-bg" id="modal-bg"><div class="modal" id="modal"></div></div>
+
+<script>
+// ============================================================
+// API client
+// ============================================================
+const api = {
+  async get(path) {
+    const r = await fetch('/api' + path);
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async post(path, body) {
+    const r = await fetch('/api' + path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {}),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.json();
+  },
+};
+
+// ============================================================
+// Toasts + helpers
+// ============================================================
+function toast(msg, kind = 'info') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+function fmtTs(s) {
+  if (!s) return '—';
+  const d = typeof s === 'string' ? new Date(s) : new Date(s * 1000);
+  if (isNaN(d)) return s;
+  return d.toLocaleString('zh-CN', {hour12: false});
+}
+function fmtBytes(n) {
+  if (n == null) return '—';
+  const u = ['B','KB','MB','GB'];
+  let i = 0, x = n;
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
+  return x.toFixed(1) + ' ' + u[i];
+}
+function reviewBadge(s) {
+  const cls = {pending:'amber', approved:'green', auto_approved:'green', rejected:'danger', edited:'green'}[s] || 'muted';
+  return `<span class="chip ${cls}">${s || '—'}</span>`;
+}
+function el(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstChild;
+}
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function setActions(html) {
+  document.getElementById('page-actions').innerHTML = html || '';
+}
+function setTitle(title, sub) {
+  document.getElementById('page-title').textContent = title;
+  document.getElementById('page-sub').textContent = sub || '';
+}
+
+// ============================================================
+// Modal
+// ============================================================
+function openModal(html) {
+  const m = document.getElementById('modal');
+  m.innerHTML = html;
+  document.getElementById('modal-bg').classList.add('open');
+}
+function closeModal() { document.getElementById('modal-bg').classList.remove('open'); }
+document.getElementById('modal-bg').addEventListener('click', (e) => {
+  if (e.target.id === 'modal-bg') closeModal();
+});
+
+// ============================================================
+// Pages
+// ============================================================
+const PAGES = {};
+
+// ---------- Dashboard ----------
+PAGES.dashboard = async (root) => {
+  setTitle('Dashboard', '实时池子状态');
+  setActions(`
+    <button class="btn ghost" onclick="renderPage('dashboard')">↻ 刷新</button>
+    <button class="btn primary" onclick="seedDemo()">⚡ 灌入演示数据</button>
+  `);
+  root.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const d = await api.get('/dashboard');
+    const s = d.stats || {};
+    const counts = d.counts || {};
+    const review = s.by_review_status || {};
+    const sens = s.by_sensitivity || {};
+    const tasks = s.by_task_type || {};
+    const lb = d.leaderboard || [];
+
+    root.innerHTML = `
+      <div class="grid-4">
+        <div class="card"><div class="label">Experiences</div><div class="num">${counts.experiences ?? s.total_experiences ?? 0}</div><div class="sub">最近 7 天 +${s.ingestion_last_7_days ?? 0}</div></div>
+        <div class="card"><div class="label">Skills</div><div class="num">${counts.skills ?? 0}</div><div class="sub">bundles 已上传</div></div>
+        <div class="card"><div class="label">Agents</div><div class="num">${counts.agents ?? 0}</div><div class="sub">注册过的身份</div></div>
+        <div class="card"><div class="label">Audit rows</div><div class="num">${counts.audit_log ?? 0}</div><div class="sub">所有状态变更</div></div>
+      </div>
+
+      <div class="grid-2" style="margin-top:20px;">
+        <div class="card">
+          <h3>Review status</h3>
+          ${renderKv(review)}
+        </div>
+        <div class="card">
+          <h3>Sensitivity</h3>
+          ${renderKv(sens)}
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:20px;">
+        <div class="card">
+          <h3>Task types</h3>
+          ${renderKv(tasks)}
+        </div>
+        <div class="card">
+          <h3>Disk</h3>
+          <div style="display:flex;gap:18px;align-items:baseline;">
+            <div style="font-size:24px;font-weight:700;">${(d.disk?.free_percent ?? 0).toFixed(1)}%</div>
+            <div style="color:var(--fg-mute);font-size:12px;">free of ${fmtBytes(d.disk?.total_bytes)}</div>
+          </div>
+          <div style="margin-top:10px;height:6px;background:var(--bg);border-radius:99px;overflow:hidden;">
+            <div style="height:100%;width:${100 - (d.disk?.free_percent ?? 0)}%;background:var(--grad);"></div>
+          </div>
+          <div style="color:var(--fg-mute);font-size:12px;margin-top:8px;">used ${fmtBytes(d.disk?.used_bytes)} · free ${fmtBytes(d.disk?.free_bytes)}</div>
+        </div>
+      </div>
+
+      <h3 class="section-title">Reuse leaderboard (top 10)</h3>
+      ${renderLeaderboard(lb)}
+
+      <h3 class="section-title">Q-scalar 分布</h3>
+      ${renderQDistFlat(s)}
+    `;
+  } catch (err) {
+    root.innerHTML = `<div class="empty"><h3>加载失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+};
+
+function renderKv(obj) {
+  const e = Object.entries(obj || {});
+  if (!e.length) return '<div style="color:var(--fg-mute);font-size:13px;">空</div>';
+  const max = Math.max(...e.map(([_,v]) => v || 0));
+  return e.map(([k, v]) => `
+    <div style="display:flex;align-items:center;gap:12px;margin:6px 0;">
+      <div style="width:120px;font-size:12px;color:var(--fg-dim);">${escapeHtml(k)}</div>
+      <div style="flex:1;height:6px;background:var(--bg);border-radius:99px;overflow:hidden;">
+        <div style="height:100%;width:${max ? (v / max * 100) : 0}%;background:var(--grad);"></div>
+      </div>
+      <div style="width:40px;text-align:right;font-family:monospace;font-size:12px;">${v}</div>
+    </div>
+  `).join('');
+}
+function renderLeaderboard(lb) {
+  if (!lb || !lb.length) return '<div class="card empty"><h3>暂无数据</h3><div style="color:var(--fg-mute);font-size:12px;">push 经验并被复用后会出现在这里</div></div>';
+  return `<table class="t">
+    <thead><tr><th>#</th><th>Intent</th><th>Task</th><th>Reuse</th><th>Q</th></tr></thead>
+    <tbody>${lb.map((r, i) => `
+      <tr class="row" onclick="openExperience('${r.experience_id}')">
+        <td class="mono">${i + 1}</td>
+        <td class="ellipsis">${escapeHtml(r.intent_text || r.experience_id)}</td>
+        <td><span class="chip muted">${escapeHtml(r.task_type || '—')}</span></td>
+        <td class="mono">${r.reuse_count}</td>
+        <td class="mono">${(r.q_scalar ?? 0).toFixed(3)}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+function renderQDistFlat(s) {
+  const rows = [
+    ['p50 (Q-scalar)', s.q_scalar_p50],
+    ['p90 (Q-scalar)', s.q_scalar_p90],
+    ['p10 (judge confidence)', s.judge_confidence_p10],
+    ['p50 (judge confidence)', s.judge_confidence_p50],
+  ];
+  const tiles = rows.map(([k, v]) => `
+    <div style="display:flex;flex-direction:column;align-items:center;padding:14px;flex:1;">
+      <div style="font-size:10px;color:var(--fg-mute);text-transform:uppercase;letter-spacing:.1em;">${k}</div>
+      <div style="font-family:monospace;font-size:22px;font-weight:600;margin-top:4px;">${v != null ? v.toFixed(3) : '—'}</div>
+    </div>
+  `).join('');
+  const hist = s.q_scalar_histogram || [];
+  const histHtml = hist.length ? `<div style="margin-top:14px;padding:0 18px 14px;"><div style="font-size:11px;color:var(--fg-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;">Histogram</div>${hist.map(b => {
+    const max = Math.max(...hist.map(x => x.count));
+    return `<div style="display:flex;align-items:center;gap:10px;margin:3px 0;font-size:11px;"><div class="mono" style="width:120px;color:var(--fg-mute);">${(b.lo ?? 0).toFixed(2)} → ${(b.hi ?? 0).toFixed(2)}</div><div style="flex:1;height:6px;background:var(--bg);border-radius:99px;overflow:hidden;"><div style="height:100%;width:${max ? (b.count / max * 100) : 0}%;background:var(--grad);"></div></div><div class="mono" style="width:30px;text-align:right;">${b.count}</div></div>`;
+  }).join('')}</div>` : '';
+  return `<div class="card" style="padding:0;"><div style="display:flex;justify-content:space-around;border-bottom:1px solid var(--border-soft);">${tiles}</div>${histHtml}</div>`;
+}
+
+// ---------- Experiences ----------
+PAGES.experiences = async (root) => {
+  setTitle('Experiences', '已沉淀的经验卡片');
+  setActions(`
+    <button class="btn ghost" onclick="renderPage('experiences')">↻</button>
+    <button class="btn primary" onclick="renderPage('push')">+ Push 一条</button>
+  `);
+  root.innerHTML = `
+    <div class="row-flex" style="margin-bottom:14px;">
+      <select class="in" id="exp-status-filter" style="max-width:180px;">
+        <option value="">所有 review_status</option>
+        <option value="pending">pending</option>
+        <option value="approved">approved</option>
+        <option value="auto_approved">auto_approved</option>
+        <option value="rejected">rejected</option>
+        <option value="edited">edited</option>
+      </select>
+      <input class="in" id="exp-task-filter" placeholder="按 task_type 过滤" style="max-width:200px;" />
+      <button class="btn" onclick="loadExperiences()">应用过滤</button>
+    </div>
+    <div id="exp-list">loading…</div>
+  `;
+  await loadExperiences();
+};
+async function loadExperiences() {
+  const status = document.getElementById('exp-status-filter')?.value || '';
+  const task = document.getElementById('exp-task-filter')?.value || '';
+  const target = document.getElementById('exp-list');
+  if (!target) return;
+  target.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const qs = new URLSearchParams({limit: 100});
+    if (status) qs.set('status', status);
+    if (task) qs.set('task_type', task);
+    const rows = await api.get('/experiences?' + qs);
+    if (!rows.length) {
+      target.innerHTML = '<div class="card empty"><h3>暂无经验</h3><div style="color:var(--fg-mute);font-size:12px;">点 Dashboard 的"灌入演示数据"或者去 Push 一条试试</div></div>';
+      return;
+    }
+    target.innerHTML = `
+      <table class="t">
+        <thead><tr><th>ID</th><th>Intent</th><th>Task</th><th>Sens</th><th>ACL</th><th>Review</th><th>Q</th><th>Reuse</th><th>Agent</th><th>Created</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr class="row" onclick="openExperience('${r.experience_id}')">
+            <td class="mono">${r.experience_id.slice(0, 8)}…</td>
+            <td class="ellipsis">${escapeHtml(r.intent_text || r.summary || '—')}</td>
+            <td><span class="chip muted">${escapeHtml(r.task_type)}</span></td>
+            <td>${escapeHtml(r.sensitivity)}</td>
+            <td><span class="chip">${escapeHtml(r.acl)}</span></td>
+            <td>${reviewBadge(r.review_status)}</td>
+            <td class="mono">${meanQ(r).toFixed(2)}</td>
+            <td class="mono">${r.reuse_count || 0}</td>
+            <td>${escapeHtml(r.agent_name || '—')}</td>
+            <td style="font-size:11px;color:var(--fg-mute);">${fmtTs(r.created_at)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (err) {
+    target.innerHTML = `<div class="empty"><h3>加载失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+}
+function meanQ(r) {
+  const ks = ['q_outcome','q_intent','q_execution','q_orchestration','q_expression'];
+  const vs = ks.map(k => r[k]).filter(v => v != null);
+  if (!vs.length) return 0;
+  return vs.reduce((a,b) => a+b, 0) / vs.length;
+}
+
+// Experience detail modal
+async function openExperience(eid) {
+  openModal(`<div class="modal-head"><h2>Experience · <span class="mono">${eid.slice(0,12)}…</span></h2><div class="spacer"></div><button class="btn ghost" onclick="closeModal()">✕</button></div>
+    <div class="modal-tabs" id="exp-modal-tabs"></div>
+    <div class="modal-body" id="exp-modal-body"><div class="empty">loading…</div></div>`);
+  try {
+    const d = await api.get('/experiences/' + eid);
+    const tabs = ['Card','Trajectory','Lineage','Skills','Audit','Raw'];
+    document.getElementById('exp-modal-tabs').innerHTML = tabs.map((t, i) => `<div class="modal-tab ${i===0?'active':''}" data-tab="${t}" onclick="switchExpTab('${t}', ${JSON.stringify(d).replace(/"/g,'&quot;').replace(/'/g,'&#39;')})">${t}</div>`).join('');
+    window.__exp_data = d;
+    renderExpTab('Card', d);
+  } catch (err) {
+    document.getElementById('exp-modal-body').innerHTML = `<div class="empty"><h3>加载失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+}
+function switchExpTab(name, _) {
+  document.querySelectorAll('.modal-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  renderExpTab(name, window.__exp_data);
+}
+function renderExpTab(name, d) {
+  const body = document.getElementById('exp-modal-body');
+  if (name === 'Card') {
+    const q = ['outcome','intent','execution','orchestration','expression'].map(k => `
+      <div style="text-align:center;padding:10px;">
+        <div style="font-size:10px;color:var(--fg-mute);text-transform:uppercase;letter-spacing:.1em;">${k}</div>
+        <div style="font-family:monospace;font-size:18px;font-weight:600;color:${(d['q_'+k] ?? 0) >= 0 ? 'var(--ok)' : 'var(--danger)'};">${d['q_'+k] != null ? d['q_'+k].toFixed(2) : '—'}</div>
+      </div>`).join('');
+    body.innerHTML = `
+      <div class="row-flex" style="margin-bottom:18px;">
+        ${reviewBadge(d.review_status)}
+        <span class="chip muted">${escapeHtml(d.task_type || '—')}</span>
+        <span class="chip">${escapeHtml(d.acl)}</span>
+        <span class="chip ${d.sanitization_status === 'human_review' ? 'amber' : 'green'}">sanitize: ${d.sanitization_status}</span>
+        <div class="spacer"></div>
+        <button class="btn" onclick="reviewAction('${d.experience_id}','approve')">✓ 批准</button>
+        <button class="btn danger" onclick="reviewAction('${d.experience_id}','reject')">✕ 拒绝</button>
+      </div>
+      <div class="card" style="margin-bottom:14px;">
+        <h3 style="margin-bottom:6px;">Intent</h3>
+        <div style="color:var(--fg-dim);">${escapeHtml(d.intent_text || '—')}</div>
+        <hr/>
+        <h3 style="margin-bottom:6px;">Summary</h3>
+        <div style="color:var(--fg-dim);">${escapeHtml(d.summary || '—')}</div>
+      </div>
+      <div class="card" style="margin-bottom:14px;">
+        <h3>Q breakdown</h3>
+        <div style="display:flex;justify-content:space-around;">${q}</div>
+        <div style="margin-top:10px;color:var(--fg-mute);font-size:12px;text-align:center;">q_update_count: ${d.q_update_count || 0} · reuse_count: ${d.reuse_count || 0} · visit_count: ${d.visit_count || 0}</div>
+      </div>
+      ${(d.script_steps || []).length ? `<div class="card"><h3>Script steps</h3>${(d.script_steps || []).map((s, i) => `<div style="padding:8px 0;border-bottom:1px solid var(--border-soft);"><div style="color:var(--accent);font-size:12px;font-family:monospace;">step ${i+1}</div><div style="font-size:13px;">${escapeHtml(typeof s === 'string' ? s : (s.what || JSON.stringify(s)))}</div>${s && s.why ? `<div style="font-size:12px;color:var(--fg-mute);margin-top:4px;">why: ${escapeHtml(s.why)}</div>` : ''}</div>`).join('')}</div>` : ''}
+    `;
+  } else if (name === 'Trajectory') {
+    const tt = d.trajectory?.trajectory || d.trajectory || [];
+    const raw = d.trajectory_raw?.trajectory || d.trajectory_raw;
+    body.innerHTML = `
+      ${raw ? '<div class="chip amber" style="margin-bottom:10px;">⚠ 已脱敏，下面是 sanitized 副本（raw 在 .raw.json）</div>' : ''}
+      <pre class="code">${escapeHtml(JSON.stringify(tt, null, 2))}</pre>
+      ${raw ? `<h3 class="section-title">Raw (脱敏前)</h3><pre class="code">${escapeHtml(JSON.stringify(raw, null, 2))}</pre>` : ''}
+    `;
+  } else if (name === 'Lineage') {
+    body.innerHTML = `
+      <div class="grid-2">
+        <div class="card"><h3>Parents (${(d.parent_ids||[]).length})</h3>${(d.parent_ids||[]).map(p => `<div class="row-flex" style="padding:6px 0;"><span class="mono">${p.slice(0,12)}…</span><button class="btn ghost" onclick="closeModal();openExperience('${p}')">查看 →</button></div>`).join('') || '<div style="color:var(--fg-mute);">无</div>'}</div>
+        <div class="card"><h3>Children (${(d.child_ids||[]).length})</h3>${(d.child_ids||[]).map(p => `<div class="row-flex" style="padding:6px 0;"><span class="mono">${p.slice(0,12)}…</span><button class="btn ghost" onclick="closeModal();openExperience('${p}')">查看 →</button></div>`).join('') || '<div style="color:var(--fg-mute);">无</div>'}</div>
+      </div>
+      <h3 class="section-title">Q-update 历史 (${(d.q_updates||[]).length})</h3>
+      ${(d.q_updates||[]).length ? `<table class="t"><thead><tr><th>Time</th><th>α·c</th><th>From child</th><th>Δ outcome</th></tr></thead><tbody>${(d.q_updates||[]).map(u => `<tr><td style="font-size:11px;">${fmtTs(u.created_at)}</td><td class="mono">${(u.alpha_c ?? 0).toFixed(3)}</td><td class="mono">${(u.source_child_id||'—').slice(0,12)}…</td><td class="mono">${(u.delta_outcome ?? 0).toFixed(3)}</td></tr>`).join('')}</tbody></table>` : '<div style="color:var(--fg-mute);">无</div>'}
+    `;
+  } else if (name === 'Skills') {
+    body.innerHTML = (d.skills_used && d.skills_used.length) ?
+      `<table class="t"><thead><tr><th>Skill</th><th>Version</th><th>当时引用于</th></tr></thead><tbody>${d.skills_used.map(s => `<tr class="row" onclick="closeModal();renderPage('skills');setTimeout(()=>openSkill('${escapeHtml(s.name||'')}'),100)"><td>${escapeHtml(s.name || s.skill_id)}</td><td>${escapeHtml(s.version || '—')}</td><td style="font-size:11px;">${fmtTs(s.created_at)}</td></tr>`).join('')}</tbody></table>` :
+      '<div style="color:var(--fg-mute);">本次 push 没有声明 uses_skills</div>';
+  } else if (name === 'Audit') {
+    body.innerHTML = (d.audit && d.audit.length) ?
+      `<table class="t"><thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Action</th><th>Payload</th></tr></thead><tbody>${d.audit.map(a => `<tr><td style="font-size:11px;">${fmtTs(a.created_at)}</td><td>${escapeHtml(a.actor || '—')}</td><td><span class="chip muted">${escapeHtml(a.actor_kind||'')}</span></td><td>${escapeHtml(a.action||'')}</td><td style="font-size:11px;color:var(--fg-mute);" class="mono">${escapeHtml(typeof a.payload === 'string' ? a.payload : JSON.stringify(a.payload || {}))}</td></tr>`).join('')}</tbody></table>` :
+      '<div style="color:var(--fg-mute);">无</div>';
+  } else if (name === 'Raw') {
+    body.innerHTML = `<pre class="code">${escapeHtml(JSON.stringify(d, null, 2))}</pre>`;
+  }
+}
+async function reviewAction(eid, action) {
+  try {
+    const r = await api.post(`/experiences/${eid}/${action}`, {reviewer: 'ui-admin'});
+    toast(`${action} → updated ${r.updated} 行`, r.updated ? 'ok' : 'info');
+    closeModal();
+    if (currentPage === 'experiences') loadExperiences();
+  } catch (err) {
+    toast('失败: ' + err.message, 'err');
+  }
+}
+
+// ---------- Push ----------
+PAGES.push = async (root) => {
+  setTitle('Push 经验', '上传一段 trajectory，跑完整流水线');
+  setActions('');
+  root.innerHTML = `
+    <div style="max-width:760px;">
+      <div class="card">
+        <div class="row-flex" style="margin-bottom:14px;">
+          <button class="btn primary" onclick="setPushMode('full')" id="mode-full">完整 push (Extractor + Judge)</button>
+          <button class="btn" onclick="setPushMode('lite')" id="mode-lite">Lite push (跳过 LLM)</button>
+        </div>
+
+        <div id="push-form-full">
+          <div class="row-3">
+            <div class="field"><label>Agent name</label><input class="in" id="f-agent" value="alice" /></div>
+            <div class="field"><label>Task type</label><input class="in" id="f-task" value="csv_analysis" /></div>
+            <div class="field"><label>Source model</label><input class="in" id="f-model" value="claude-haiku-4-5-20251001" /></div>
+          </div>
+          <div class="row-3">
+            <div class="field"><label>Sensitivity</label><select class="in" id="f-sens"><option>low</option><option selected>medium</option><option>high</option></select></div>
+            <div class="field"><label>ACL</label><select class="in" id="f-acl"><option>private</option><option>team:platform</option><option selected>org</option></select></div>
+            <div class="field"><label>Tags (逗号分隔)</label><input class="in" id="f-tags" placeholder="demo, csv" /></div>
+          </div>
+          <div class="field">
+            <label>Trajectory JSON (list of {role, content})</label>
+            <textarea class="in" id="f-traj">[
+  {"role":"user","content":"compute revenue by region from sales.csv"},
+  {"role":"assistant","content":"I'll groupby region and sum revenue"},
+  {"role":"tool","content":"df.groupby('region')['revenue'].sum().nlargest(5)"},
+  {"role":"assistant","content":"Top: APAC 1.2M, EMEA 0.9M, NA 0.8M"}
+]</textarea>
+            <div class="hint">每个对象至少要有 role 和 content。脱敏会自动跑。</div>
+          </div>
+          <div class="row-2">
+            <div class="field"><label>Parent experience IDs (逗号分隔)</label><input class="in" id="f-parents" placeholder="可选" /></div>
+            <div class="field"><label>Uses skills (逗号分隔)</label><input class="in" id="f-skills" placeholder="csv-helper" /></div>
+          </div>
+          <button class="btn primary" onclick="doPush()" id="push-btn">⬆ Push (走完整流水线)</button>
+          <div class="hint" style="margin-top:8px;">完整 push 会调用 LLM 做 extractor + 5 维 judge；mock 后端约 1-2 秒返回。</div>
+        </div>
+
+        <div id="push-form-lite" style="display:none;">
+          <div class="row-2">
+            <div class="field"><label>Agent name</label><input class="in" id="lf-agent" value="alice" /></div>
+            <div class="field"><label>Task type</label><input class="in" id="lf-task" value="quick_note" /></div>
+          </div>
+          <div class="field"><label>Query (用户问的)</label><input class="in" id="lf-query" placeholder="how to debug X" /></div>
+          <div class="field"><label>Intent (一句话总结意图)</label><input class="in" id="lf-intent" placeholder="reset kafka offset" /></div>
+          <div class="field"><label>Steps (每行一步)</label><textarea class="in" id="lf-steps">step 1: identify the consumer group
+step 2: stop consumers
+step 3: reset offsets via kafka-consumer-groups.sh</textarea></div>
+          <div class="field"><label>Outcome (结果)</label><input class="in" id="lf-outcome" placeholder="lag dropped to 0" /></div>
+          <button class="btn primary" onclick="doLitePush()">⬆ Push lite</button>
+        </div>
+      </div>
+
+      <div id="push-result" style="margin-top:18px;"></div>
+    </div>
+  `;
+};
+function setPushMode(m) {
+  document.getElementById('push-form-full').style.display = m === 'full' ? '' : 'none';
+  document.getElementById('push-form-lite').style.display = m === 'lite' ? '' : 'none';
+  document.getElementById('mode-full').classList.toggle('primary', m === 'full');
+  document.getElementById('mode-lite').classList.toggle('primary', m === 'lite');
+}
+async function doPush() {
+  const btn = document.getElementById('push-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>跑流水线中…';
+  try {
+    let traj;
+    try { traj = JSON.parse(document.getElementById('f-traj').value); }
+    catch (e) { throw new Error('Trajectory JSON 解析失败: ' + e.message); }
+    const tags = document.getElementById('f-tags').value.split(',').map(s => s.trim()).filter(Boolean);
+    const parents = document.getElementById('f-parents').value.split(',').map(s => s.trim()).filter(Boolean);
+    const skills = document.getElementById('f-skills').value.split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      agent_name: document.getElementById('f-agent').value || 'ui-admin',
+      task_type: document.getElementById('f-task').value || 'misc',
+      source_model: document.getElementById('f-model').value,
+      trajectory: traj,
+      sensitivity: document.getElementById('f-sens').value,
+      acl: document.getElementById('f-acl').value,
+      tags, parent_experience_ids: parents, uses_skills: skills,
+    };
+    const r = await api.post('/experiences/push', body);
+    toast('Push 成功 · id=' + (r.experience_id||'').slice(0,8) + '…', 'ok');
+    document.getElementById('push-result').innerHTML = `
+      <div class="card">
+        <h3>结果</h3>
+        <div class="row-flex" style="margin-bottom:10px;">
+          ${reviewBadge(r.review_status)}
+          <span class="chip muted">extract: ${escapeHtml(r.extraction_status)}</span>
+          <span class="chip ${r.sanitization_status==='human_review'?'amber':'green'}">sanitize: ${escapeHtml(r.sanitization_status)}</span>
+          <button class="btn" onclick="openExperience('${r.experience_id}')">查看详情 →</button>
+        </div>
+        <pre class="code">${escapeHtml(JSON.stringify(r, null, 2))}</pre>
+      </div>
+    `;
+  } catch (err) {
+    toast('Push 失败: ' + err.message, 'err');
+    document.getElementById('push-result').innerHTML = `<div class="card empty"><h3 style="color:var(--danger);">失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  } finally {
+    btn.disabled = false; btn.innerHTML = '⬆ Push (走完整流水线)';
+  }
+}
+async function doLitePush() {
+  try {
+    const body = {
+      agent_name: document.getElementById('lf-agent').value || 'ui-admin',
+      task_type: document.getElementById('lf-task').value || 'misc',
+      query: document.getElementById('lf-query').value,
+      intent: document.getElementById('lf-intent').value,
+      steps: document.getElementById('lf-steps').value.split('\n').map(s => s.trim()).filter(Boolean),
+      outcome: document.getElementById('lf-outcome').value,
+    };
+    const r = await api.post('/experiences/push-lite', body);
+    toast('Lite push OK', 'ok');
+    document.getElementById('push-result').innerHTML = `<div class="card"><pre class="code">${escapeHtml(JSON.stringify(r, null, 2))}</pre></div>`;
+  } catch (err) { toast('失败: ' + err.message, 'err'); }
+}
+
+// ---------- Search ----------
+PAGES.search = async (root) => {
+  setTitle('Search', '混合检索 · sim + Q + UCB · FTS5 keyword pass');
+  setActions('');
+  root.innerHTML = `
+    <div style="max-width:900px;">
+      <div class="card">
+        <div class="row-flex" style="gap:10px;">
+          <input class="in" id="s-q" placeholder="kafka offset reset / csv 聚合 / ..." style="flex:1;" />
+          <input class="in" id="s-task" placeholder="task_type (可选)" style="max-width:180px;" />
+          <input class="in" id="s-k" type="number" value="10" style="max-width:80px;" />
+          <button class="btn primary" onclick="doSearch()" id="s-btn">🔍 Search</button>
+        </div>
+        <div class="hint" style="margin-top:6px;">查询会同时跑 full pool 和 lite pool。Pool 按 score = 0.55·sim_z + 0.35·q_z + 0.10·UCB 排序。</div>
+      </div>
+      <div id="s-out" style="margin-top:18px;"></div>
+    </div>
+  `;
+  document.getElementById('s-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+};
+async function doSearch() {
+  const btn = document.getElementById('s-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+  try {
+    const q = document.getElementById('s-q').value.trim();
+    const task = document.getElementById('s-task').value.trim();
+    const k = parseInt(document.getElementById('s-k').value || '10');
+    if (!q) { toast('查询不能为空', 'err'); return; }
+    const qs = new URLSearchParams({q, top_k: k});
+    if (task) qs.set('task_type', task);
+    const r = await api.get('/experiences/search?' + qs);
+    const out = document.getElementById('s-out');
+    const hits = r.results || [];
+    const lite = r.lite_results || [];
+    out.innerHTML = `
+      <h3 class="section-title">Full pool · ${hits.length} 命中</h3>
+      ${hits.length === 0 ? '<div class="card empty"><h3>没有命中</h3><div style="color:var(--fg-mute);font-size:12px;">需要先 push 几条 + 通过 review 才能在 search 里出现（pending 不在索引里）</div></div>' :
+        hits.map((h, i) => `
+          <div class="card" style="margin-bottom:10px;">
+            <div class="row-flex">
+              <span class="mono" style="color:var(--accent);">#${i+1}</span>
+              <span class="chip muted">${escapeHtml(h.task_type||'')}</span>
+              <span class="mono" style="color:var(--accent-2);">score ${(h.score ?? 0).toFixed(3)}</span>
+              <span style="font-size:11px;color:var(--fg-mute);">sim ${(h.score_components?.similarity ?? 0).toFixed(3)} · q ${(h.score_components?.q_value ?? 0).toFixed(3)} · ucb ${(h.score_components?.exploration ?? 0).toFixed(3)}</span>
+              <div class="spacer"></div>
+              <button class="btn" onclick="openExperience('${h.experience_id}')">查看 →</button>
+            </div>
+            <div style="margin-top:8px;font-size:14px;font-weight:500;">${escapeHtml(h.intent_text || '—')}</div>
+            <div style="margin-top:4px;color:var(--fg-dim);font-size:13px;">${escapeHtml(h.summary || '')}</div>
+            <div style="margin-top:8px;color:var(--fg-mute);font-size:11px;">q_scalar ${(h.q_scalar ?? 0).toFixed(3)} · reuse ${h.reuse_count} · visit ${h.visit_count} · q_updates ${h.q_update_count}</div>
+          </div>
+        `).join('')}
+      ${lite.length ? `<h3 class="section-title">Lite pool · ${lite.length} 命中</h3>${lite.map(h => `<div class="card" style="margin-bottom:10px;"><div class="row-flex"><span class="chip muted">${escapeHtml(h.task_type||'')}</span><span class="mono">score ${(h.score??0).toFixed(3)}</span></div><div style="margin-top:6px;">${escapeHtml(h.intent || '')}</div><div style="font-size:12px;color:var(--fg-mute);">${escapeHtml(h.outcome || '')}</div></div>`).join('')}` : ''}
+    `;
+  } catch (err) {
+    toast('Search 失败: ' + err.message, 'err');
+  } finally {
+    btn.disabled = false; btn.innerHTML = '🔍 Search';
+  }
+}
+
+// ---------- Skills ----------
+PAGES.skills = async (root) => {
+  setTitle('Skills', '可被 install 的能力 bundle');
+  setActions(`
+    <button class="btn ghost" onclick="renderPage('skills')">↻</button>
+    <button class="btn primary" onclick="renderPage('upload-skill')">+ 新建 Skill</button>
+  `);
+  root.innerHTML = `
+    <div class="row-flex" style="margin-bottom:14px;">
+      <input class="in" id="sk-search" placeholder="搜索 (sim + Q + UCB)" style="max-width:400px;" />
+      <button class="btn" onclick="searchSkills()">搜索</button>
+      <button class="btn ghost" onclick="loadSkills()">重置</button>
+    </div>
+    <div id="sk-list">loading…</div>
+  `;
+  document.getElementById('sk-search').addEventListener('keydown', e => { if (e.key === 'Enter') searchSkills(); });
+  await loadSkills();
+};
+async function loadSkills() {
+  const target = document.getElementById('sk-list');
+  if (!target) return;
+  target.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const rows = await api.get('/skills');
+    if (!rows.length) {
+      target.innerHTML = '<div class="card empty"><h3>暂无 Skill</h3><div style="color:var(--fg-mute);font-size:12px;">点右上角 + 新建一个</div></div>';
+      return;
+    }
+    target.innerHTML = renderSkillsTable(rows);
+  } catch (err) {
+    target.innerHTML = `<div class="empty"><h3>失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+}
+async function searchSkills() {
+  const q = document.getElementById('sk-search').value.trim();
+  if (!q) { loadSkills(); return; }
+  const target = document.getElementById('sk-list');
+  target.innerHTML = '<div class="empty">searching…</div>';
+  try {
+    const r = await api.get('/skills/search?q=' + encodeURIComponent(q));
+    target.innerHTML = renderSkillsTable(r.results || []);
+  } catch (err) {
+    target.innerHTML = `<div class="empty"><h3>失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+}
+function renderSkillsTable(rows) {
+  if (!rows.length) return '<div class="card empty"><h3>没有命中</h3></div>';
+  return `<table class="t">
+    <thead><tr><th>Name</th><th>Ver</th><th>Description</th><th>Q</th><th>Invoke</th><th>Install</th><th>Review</th><th>ACL</th></tr></thead>
+    <tbody>${rows.map(r => `
+      <tr class="row" onclick="openSkill('${escapeHtml(r.name)}')">
+        <td><span style="font-weight:600;">${escapeHtml(r.name)}</span></td>
+        <td class="mono">${escapeHtml(r.version || '—')}</td>
+        <td class="ellipsis" style="color:var(--fg-dim);">${escapeHtml(r.description || '—')}</td>
+        <td class="mono">${meanQ(r).toFixed(2)}</td>
+        <td class="mono">${r.invoke_count || 0}</td>
+        <td class="mono">${r.install_count || 0}</td>
+        <td>${reviewBadge(r.review_status)}</td>
+        <td><span class="chip">${escapeHtml(r.acl)}</span></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+async function openSkill(name) {
+  openModal(`<div class="modal-head"><h2>Skill · ${escapeHtml(name)}</h2><div class="spacer"></div><button class="btn" onclick="installSkill('${escapeHtml(name)}')">⬇ Install (查看 bundle)</button><button class="btn ghost" onclick="closeModal()">✕</button></div><div class="modal-body" id="sk-modal-body"><div class="empty">loading…</div></div>`);
+  try {
+    const d = await api.get('/skills/' + encodeURIComponent(name));
+    document.getElementById('sk-modal-body').innerHTML = `
+      <div class="row-flex" style="margin-bottom:14px;">
+        ${reviewBadge(d.review_status)}
+        <span class="chip muted">v${escapeHtml(d.version||'—')}</span>
+        <span class="chip">${escapeHtml(d.acl||'—')}</span>
+        <span class="chip ${d.sanitization_status==='human_review'?'amber':'green'}">sanitize: ${d.sanitization_status}</span>
+      </div>
+      <div class="card" style="margin-bottom:14px;"><h3>Description</h3><div style="color:var(--fg-dim);">${escapeHtml(d.description || '—')}</div></div>
+      <div class="grid-3" style="margin-bottom:14px;">
+        <div class="card"><div class="label">Invoke count</div><div class="num" style="font-size:22px;">${d.invoke_count || 0}</div></div>
+        <div class="card"><div class="label">Install count</div><div class="num" style="font-size:22px;">${d.install_count || 0}</div></div>
+        <div class="card"><div class="label">Q mean</div><div class="num" style="font-size:22px;">${meanQ(d).toFixed(2)}</div></div>
+      </div>
+      <div class="card"><h3>Q breakdown</h3>${['outcome','intent','execution','orchestration','expression'].map(k => `<div class="row-flex" style="padding:4px 0;"><div style="width:140px;color:var(--fg-mute);font-size:12px;">${k}</div><div style="flex:1;height:5px;background:var(--bg);border-radius:99px;overflow:hidden;"><div style="height:100%;width:${Math.max(0,(d['q_'+k]||0)+1)*50}%;background:var(--grad);"></div></div><div class="mono" style="width:50px;text-align:right;">${(d['q_'+k]||0).toFixed(2)}</div></div>`).join('')}<div style="margin-top:8px;color:var(--fg-mute);font-size:12px;">q_update_count: ${d.q_update_count || 0}</div></div>
+      ${d.q_updates && d.q_updates.length ? `<h3 class="section-title">Q updates</h3><table class="t"><thead><tr><th>Time</th><th>α·c</th><th>From experience</th></tr></thead><tbody>${d.q_updates.slice(0,20).map(u => `<tr><td style="font-size:11px;">${fmtTs(u.created_at)}</td><td class="mono">${(u.alpha_c||0).toFixed(3)}</td><td class="mono">${(u.source_experience_id||'').slice(0,12)}…</td></tr>`).join('')}</tbody></table>` : ''}
+      ${d.used_by && d.used_by.length ? `<h3 class="section-title">Used by</h3><table class="t"><thead><tr><th>Experience</th><th>Intent</th><th>Task</th></tr></thead><tbody>${d.used_by.map(u => `<tr class="row" onclick="closeModal();openExperience('${u.experience_id}')"><td class="mono">${(u.experience_id||'').slice(0,12)}…</td><td class="ellipsis">${escapeHtml(u.intent_text||'—')}</td><td><span class="chip muted">${escapeHtml(u.task_type||'—')}</span></td></tr>`).join('')}</tbody></table>` : ''}
+      <h3 class="section-title">Bundle metadata</h3>
+      <pre class="code">name: ${escapeHtml(d.name)}
+version: ${escapeHtml(d.version || '—')}
+sha256: ${escapeHtml(d.bundle_sha256 || '—')}
+bundle_path: ${escapeHtml(d.bundle_path || '—')}
+created_at: ${fmtTs(d.created_at)}</pre>
+    `;
+  } catch (err) {
+    document.getElementById('sk-modal-body').innerHTML = `<div class="empty"><h3>失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+}
+async function installSkill(name) {
+  try {
+    const r = await api.get('/skills/' + encodeURIComponent(name) + '/install');
+    openModal(`<div class="modal-head"><h2>Bundle · ${escapeHtml(name)}</h2><div class="spacer"></div><button class="btn" onclick="downloadSkill('${escapeHtml(name)}','${escapeHtml(r.bundle_b64)}')">⬇ 下载 .tar.gz</button><button class="btn ghost" onclick="closeModal()">✕</button></div>
+      <div class="modal-body">
+        <div class="row-flex" style="margin-bottom:12px;">
+          <span class="chip green">sha256 ✓ ${escapeHtml((r.bundle_sha256||'').slice(0,16))}…</span>
+          <span class="chip muted">${r.files.length} files</span>
+        </div>
+        ${r.files.map(f => `<div class="card" style="margin-bottom:10px;"><div class="row-flex" style="margin-bottom:8px;"><span class="mono" style="color:var(--accent);">${escapeHtml(f.path)}</span><span style="color:var(--fg-mute);font-size:11px;">${fmtBytes(f.size)}</span></div><pre class="code" style="max-height:300px;">${escapeHtml(f.content)}</pre></div>`).join('')}
+      </div>`);
+  } catch (err) { toast('Install 失败: ' + err.message, 'err'); }
+}
+function downloadSkill(name, b64) {
+  const bytes = atob(b64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  const blob = new Blob([arr], {type: 'application/gzip'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name + '.tar.gz';
+  a.click();
+}
+
+// ---------- Upload Skill ----------
+PAGES['upload-skill'] = async (root) => {
+  setTitle('新建 Skill', '从文本字段构建 bundle，跑 sanitizer + 入库');
+  setActions('');
+  root.innerHTML = `
+    <div style="max-width:900px;">
+      <div class="card">
+        <div class="row-2">
+          <div class="field"><label>Agent (作者)</label><input class="in" id="sk-agent" value="alice" /></div>
+          <div class="field"><label>Sensitivity</label><select class="in" id="sk-sens"><option selected>low</option><option>medium</option><option>high</option></select></div>
+        </div>
+        <div class="row-2">
+          <div class="field"><label>ACL</label><select class="in" id="sk-acl"><option>private</option><option>team:platform</option><option selected>org</option></select></div>
+          <div class="field"><label>Tags (逗号分隔)</label><input class="in" id="sk-tags" /></div>
+        </div>
+        <div class="field">
+          <label>SKILL.md (必须，YAML frontmatter 必填 name + description)</label>
+          <textarea class="in" id="sk-md" style="min-height:160px;">---
+name: my-skill
+description: 一行话讲清楚这个 skill 干啥，会被 agent 当 trigger 用。
+---
+
+# my-skill
+
+详细说明...
+
+## Steps
+1. ...
+2. ...</textarea>
+        </div>
+        <div class="field">
+          <label>附加文件 (可选 · 一行一个 path::content; \\n 在 content 里表换行)</label>
+          <textarea class="in" id="sk-extras" style="min-height:100px;">snippet.py::import pandas as pd\\n\\ndef topk(df, k=5):\\n    return df.nlargest(k, 'value')</textarea>
+          <div class="hint">格式 <span class="mono">path::content</span>，可以多行；每行表示一个文件。content 内的字面量 \\n 会变成换行。</div>
+        </div>
+        <button class="btn primary" onclick="uploadSkill()" id="sk-up-btn">⬆ 上传 + 入库</button>
+      </div>
+      <div id="sk-up-result" style="margin-top:18px;"></div>
+    </div>
+  `;
+};
+async function uploadSkill() {
+  const btn = document.getElementById('sk-up-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>建包 + sanitize + 入库中…';
+  try {
+    const md = document.getElementById('sk-md').value;
+    if (!md.trim()) throw new Error('SKILL.md 不能为空');
+    const files = [{path: 'SKILL.md', content: md}];
+    const extras = document.getElementById('sk-extras').value.split('\n').map(s => s.trim()).filter(Boolean);
+    for (const line of extras) {
+      const idx = line.indexOf('::');
+      if (idx === -1) continue;
+      const path = line.slice(0, idx).trim();
+      const content = line.slice(idx + 2).replace(/\\n/g, '\n');
+      if (path) files.push({path, content});
+    }
+    const tags = document.getElementById('sk-tags').value.split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      agent_name: document.getElementById('sk-agent').value || 'ui-admin',
+      files,
+      sensitivity: document.getElementById('sk-sens').value,
+      acl: document.getElementById('sk-acl').value,
+      tags,
+    };
+    const r = await api.post('/skills/push-from-files', body);
+    toast('Skill 已入库 · sha256 ' + (r.bundle_sha256 || '').slice(0,12), 'ok');
+    document.getElementById('sk-up-result').innerHTML = `
+      <div class="card">
+        <h3>结果</h3>
+        <div class="row-flex" style="margin-bottom:8px;">
+          ${reviewBadge(r.review_status)}
+          <button class="btn" onclick="openSkill('${escapeHtml(r.name)}')">查看 →</button>
+        </div>
+        <pre class="code">${escapeHtml(JSON.stringify(r, null, 2))}</pre>
+      </div>
+    `;
+  } catch (err) {
+    toast('上传失败: ' + err.message, 'err');
+    document.getElementById('sk-up-result').innerHTML = `<div class="card empty"><h3 style="color:var(--danger);">失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  } finally {
+    btn.disabled = false; btn.innerHTML = '⬆ 上传 + 入库';
+  }
+}
+
+// ---------- Agents ----------
+PAGES.agents = async (root) => {
+  setTitle('Agents', '注册过的 agent 身份');
+  setActions(`<button class="btn ghost" onclick="renderPage('agents')">↻</button><button class="btn primary" onclick="openModal(registerAgentModal())">+ 注册</button>`);
+  root.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const rows = await api.get('/agents');
+    if (!rows.length) {
+      root.innerHTML = '<div class="card empty"><h3>无 agent</h3></div>';
+      return;
+    }
+    root.innerHTML = `<table class="t"><thead><tr><th>Name</th><th>Team</th><th>Agent ID</th><th>Created</th></tr></thead><tbody>${rows.map(r => `<tr><td style="font-weight:600;">${escapeHtml(r.name)}</td><td><span class="chip">${escapeHtml(r.team)}</span></td><td class="mono">${(r.agent_id||'').slice(0,16)}…</td><td style="font-size:11px;">${fmtTs(r.created_at)}</td></tr>`).join('')}</tbody></table>`;
+  } catch (err) {
+    root.innerHTML = `<div class="empty"><h3>失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+};
+function registerAgentModal() {
+  return `<div class="modal-head"><h2>注册 Agent</h2><div class="spacer"></div><button class="btn ghost" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="field"><label>Name</label><input class="in" id="ra-name" placeholder="alice" /></div>
+      <div class="field"><label>Team</label><input class="in" id="ra-team" placeholder="platform" value="platform" /></div>
+      <button class="btn primary" onclick="registerAgent()">注册</button>
+    </div>`;
+}
+async function registerAgent() {
+  try {
+    const name = document.getElementById('ra-name').value.trim();
+    const team = document.getElementById('ra-team').value.trim() || 'platform';
+    if (!name) { toast('name 必填', 'err'); return; }
+    await api.post('/agents/register', {name, team});
+    toast('注册成功: ' + name, 'ok');
+    closeModal();
+    if (currentPage === 'agents') renderPage('agents');
+  } catch (err) { toast('失败: ' + err.message, 'err'); }
+}
+
+// ---------- Audit ----------
+PAGES.audit = async (root) => {
+  setTitle('Audit log', '所有状态变更的全量审计');
+  setActions(`<button class="btn ghost" onclick="renderPage('audit')">↻</button>`);
+  root.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const rows = await api.get('/audit?limit=200');
+    if (!rows.length) { root.innerHTML = '<div class="card empty"><h3>暂无审计</h3></div>'; return; }
+    root.innerHTML = `<table class="t"><thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Action</th><th>Target</th><th>Payload</th></tr></thead><tbody>${rows.map(r => `<tr><td style="font-size:11px;">${fmtTs(r.created_at)}</td><td>${escapeHtml(r.actor||'—')}</td><td><span class="chip muted">${escapeHtml(r.actor_kind||'')}</span></td><td>${escapeHtml(r.action||'')}</td><td class="mono" style="font-size:11px;">${(r.target_id||'').slice(0,12)}…</td><td class="ellipsis mono" style="font-size:11px;color:var(--fg-mute);">${escapeHtml(typeof r.payload==='string'?r.payload:JSON.stringify(r.payload||{}))}</td></tr>`).join('')}</tbody></table>`;
+  } catch (err) {
+    root.innerHTML = `<div class="empty"><h3>失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+};
+
+// ---------- Settings ----------
+PAGES.settings = async (root) => {
+  setTitle('Settings', 'Pool / 部署 / 维护');
+  setActions('');
+  root.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const m = await api.get('/meta');
+    const h = await fetch('/healthz').then(r => r.json()).catch(() => ({}));
+    root.innerHTML = `
+      <div class="grid-2">
+        <div class="card">
+          <h3>Server</h3>
+          ${kvLine('Version', m.version)}
+          ${kvLine('LLM backend', m.llm_backend)}
+          ${kvLine('EXP_ROOT', m.root)}
+          ${kvLine('SQLite', m.db_path)}
+          ${kvLine('Health', h.status === 'ok' ? '<span class="chip green">ok</span>' : '<span class="chip danger">fail</span>')}
+        </div>
+        <div class="card">
+          <h3>快捷操作</h3>
+          <p style="color:var(--fg-mute);font-size:13px;margin-top:0;">演示数据：3 条 experience（含 1 对 parent/child）+ 1 个 csv-helper skill。</p>
+          <button class="btn primary" onclick="seedDemo()" style="margin-bottom:8px;">⚡ 灌入演示数据</button><br/>
+          <p style="color:var(--fg-mute);font-size:13px;">⚠ 危险：清空整个池子（仅 dev / 测试用）。</p>
+          <button class="btn danger" onclick="wipePool()">⚠ Wipe pool</button>
+        </div>
+      </div>
+      <h3 class="section-title">环境变量速查</h3>
+      <pre class="code">EXP_ROOT=/var/lib/expool          # 数据根目录
+EXP_LLM=mock|claude               # mock = 测试; claude = 调真 claude CLI
+EXP_LLM_MODEL=claude-haiku-4-5-20251001
+EXP_RATE_PUSH_PER_MIN=60
+EXP_RATE_SEARCH_PER_MIN=1000</pre>
+      <h3 class="section-title">CLI 参考</h3>
+      <pre class="code"><span style="color:var(--fg-mute);"># 注册 + push (走 HMAC-签名后端 :8080)</span>
+exp register --name alice --team platform
+exp push --task csv_analysis --model claude-sonnet-4-6 --file traj.json
+exp search --q "rank top regions"
+exp push-skill --bundle ./csv-helper --acl org
+exp install-skill --name csv-helper --target ./vendor/skills/</pre>
+    `;
+  } catch (err) {
+    root.innerHTML = `<div class="empty"><h3>失败</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+};
+function kvLine(k, v) {
+  return `<div style="display:flex;padding:6px 0;border-bottom:1px solid var(--border-soft);"><div style="width:120px;color:var(--fg-mute);font-size:12px;">${k}</div><div class="mono" style="font-size:12px;">${v || '—'}</div></div>`;
+}
+async function seedDemo() {
+  toast('正在灌入演示数据 (mock LLM 约 5 秒)…', 'info');
+  try {
+    const r = await api.post('/seed/demo', {});
+    toast(`已灌入 ${r.experiences?.length || 0} 条 experience + ${r.skills?.length || 0} 个 skill`, 'ok');
+    if (currentPage === 'dashboard') renderPage('dashboard');
+  } catch (err) { toast('失败: ' + err.message, 'err'); }
+}
+async function wipePool() {
+  if (!confirm('确认清空整个池子？此操作不可撤销。')) return;
+  try {
+    await api.post('/admin/wipe', {});
+    toast('已清空', 'ok');
+    renderPage('dashboard');
+  } catch (err) { toast('失败: ' + err.message, 'err'); }
+}
+
+// ============================================================
+// Router
+// ============================================================
+let currentPage = 'dashboard';
+async function renderPage(name) {
+  currentPage = name;
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.page === name));
+  const root = document.getElementById('page-root');
+  root.innerHTML = '<div class="empty">loading…</div>';
+  const fn = PAGES[name];
+  if (!fn) { root.innerHTML = '<div class="empty"><h3>404</h3></div>'; return; }
+  try { await fn(root); }
+  catch (err) {
+    console.error(err);
+    root.innerHTML = `<div class="empty"><h3>页面错误</h3><div>${escapeHtml(err.message)}</div></div>`;
+  }
+}
+document.querySelectorAll('#nav button').forEach(b => {
+  b.addEventListener('click', () => renderPage(b.dataset.page));
+});
+
+// ============================================================
+// Boot
+// ============================================================
+(async () => {
+  try {
+    const m = await api.get('/meta');
+    document.getElementById('meta-status').textContent = 'online';
+    document.getElementById('meta-status').className = 'ok';
+    document.getElementById('meta-llm').textContent = m.llm_backend;
+    document.getElementById('meta-version').textContent = 'v' + m.version;
+  } catch (err) {
+    document.getElementById('meta-status').textContent = 'offline';
+    document.getElementById('meta-status').className = '';
+  }
+  renderPage('dashboard');
+})();
+</script>
+</body>
+</html>

@@ -28,10 +28,17 @@ export const DEFAULT_BASE_URL =
   process.env.EXP_BASE_URL ?? "http://localhost:8080";
 
 export function credentialsDir(): string {
-  return (
-    process.env.EXP_CREDENTIALS_DIR ??
-    path.join(os.homedir(), ".experience-pool", "credentials")
-  );
+  if (process.env.EXP_CREDENTIALS_DIR) {
+    return expandHome(process.env.EXP_CREDENTIALS_DIR);
+  }
+  if (process.env.EXP_ROOT) {
+    return path.join(expandHome(process.env.EXP_ROOT), "credentials");
+  }
+  return path.join(os.homedir(), ".experience-pool", "credentials");
+}
+
+function expandHome(p: string): string {
+  return p.replace(/^~(?=$|\/|\\)/, os.homedir());
 }
 
 export function loadCredential(agentName?: string): Credential | null {

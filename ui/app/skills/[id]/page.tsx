@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/link";
 import { notFound } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +35,7 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
   const q = qScalar(skill);
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
+    <div className="space-y-6">
       <header className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold">
@@ -47,14 +47,14 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
           <p className="text-sm text-muted-foreground">{skill.description}</p>
         </div>
         <nav className="flex gap-3 text-sm">
-          <Link className="underline" href="/skills">All skills</Link>
-          <Link className="underline" href="/">Dashboard</Link>
+          <Link className="underline" href="/skills">全部技能</Link>
+          <Link className="underline" href="/">工作台</Link>
         </nav>
       </header>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Metadata</CardTitle>
+          <CardTitle className="text-base">元数据</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
           <div>
@@ -62,11 +62,11 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
             <div className="font-mono text-base">{q.toFixed(3)}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">invoke_count</div>
+            <div className="text-muted-foreground">调用次数</div>
             <div className="font-mono text-base">{skill.invoke_count}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">install_count</div>
+            <div className="text-muted-foreground">安装次数</div>
             <div className="font-mono text-base">{skill.install_count}</div>
           </div>
           <div>
@@ -74,11 +74,11 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
             <div className="font-mono text-base">{skill.q_update_count}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">file_count</div>
+            <div className="text-muted-foreground">文件数</div>
             <div className="font-mono">{skill.file_count}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">bundle size</div>
+            <div className="text-muted-foreground">bundle 大小</div>
             <div className="font-mono">{(skill.bundle_size_bytes / 1024).toFixed(1)} KB</div>
           </div>
           <div className="col-span-2 sm:col-span-2">
@@ -86,7 +86,7 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
             <div className="break-all font-mono text-xs">{skill.bundle_sha256}</div>
           </div>
           <div>
-            <div className="text-muted-foreground">created_at</div>
+            <div className="text-muted-foreground">创建时间</div>
             <div>{skill.created_at}</div>
           </div>
           <div>
@@ -97,11 +97,11 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
             </div>
           </div>
           <div>
-            <div className="text-muted-foreground">review_status</div>
+            <div className="text-muted-foreground">审阅状态</div>
             <Badge variant="secondary">{skill.review_status}</Badge>
           </div>
           <div>
-            <div className="text-muted-foreground">sanitization_status</div>
+            <div className="text-muted-foreground">脱敏状态</div>
             <Badge
               variant={skill.sanitization_status === "human_review" ? "destructive" : "secondary"}
             >
@@ -113,7 +113,7 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Q breakdown</CardTitle>
+          <CardTitle className="text-base">Q 拆分</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-5 gap-3 text-sm font-mono">
           <div>outcome<br/>{skill.q_outcome.toFixed(3)}</div>
@@ -127,7 +127,7 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
       {(triggers.length > 0 || dependencies.length > 0 || tags.length > 0) && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Tags</CardTitle>
+            <CardTitle className="text-base">标签</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             {triggers.length > 0 && (
@@ -160,7 +160,7 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">SKILL.md (sanitized)</CardTitle>
+          <CardTitle className="text-base">SKILL.md (已脱敏)</CardTitle>
         </CardHeader>
         <CardContent>
           <pre className="max-h-96 overflow-auto rounded bg-muted p-3 text-xs">
@@ -172,12 +172,12 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
-            Experiences using this skill ({uses.length})
+            使用该技能的经验 ({uses.length})
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
           {uses.length === 0 ? (
-            <p className="text-muted-foreground">No experiences linked yet.</p>
+            <p className="text-muted-foreground">暂无关联经验。</p>
           ) : (
             uses.map((u) => (
               <div key={u.experience_id} className="flex items-baseline justify-between gap-3">
@@ -188,13 +188,13 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
                   {u.experience_id.slice(0, 8)}
                 </Link>
                 <span className="flex-1 truncate text-muted-foreground">
-                  {u.intent_text ?? "(no intent)"}
+                  {u.intent_text ?? "无意图"}
                 </span>
                 <Badge variant="outline">{u.task_type ?? "?"}</Badge>
                 {u.credit_applied ? (
-                  <Badge variant="secondary">credit applied</Badge>
+                  <Badge variant="secondary">已回流</Badge>
                 ) : (
-                  <Badge variant="outline">credit pending</Badge>
+                  <Badge variant="outline">待回流</Badge>
                 )}
               </div>
             ))
@@ -205,21 +205,20 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
-            Q update history ({updates.length})
+            Q 更新历史 ({updates.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
           {updates.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No Q updates yet. The skill earns Q the first time an experience
-              that declares it as a tool finishes scoring.
+              暂无 Q 更新。技能在被经验声明并完成评分后才会产生回流。
             </p>
           ) : (
             <table className="w-full text-xs">
               <thead className="text-left text-muted-foreground">
                 <tr>
-                  <th className="pb-2">when</th>
-                  <th className="pb-2">child</th>
+                  <th className="pb-2">时间</th>
+                  <th className="pb-2">子经验</th>
                   <th className="pb-2">α·c</th>
                   <th className="pb-2">Δ outcome</th>
                   <th className="pb-2">Δ intent</th>
@@ -257,6 +256,6 @@ export default async function SkillDetailPage({ params }: SkillDetailProps) {
           )}
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }

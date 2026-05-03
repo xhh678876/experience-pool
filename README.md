@@ -76,6 +76,61 @@ trigger keywords.
 
 ## Two ways to run the standalone backend
 
+**MVP lite path** (what to test first). This skips judge / credit assignment /
+skills and only exercises: local sanitize + rule-based structure → HMAC signed
+upload → SQLite + embedding storage → ACL-filtered pure-vector search.
+
+```bash
+./scripts/mvp_smoke.sh
+```
+
+CLI flow against the FastAPI server:
+
+```bash
+cd core
+EXP_ROOT=/tmp/exp-mvp uv run --extra server uvicorn exp_core.server:app --port 8080
+
+# in another shell
+cd cli
+npm install
+EXP_ROOT=/tmp/exp-mvp npm run dev -- register --name alice --team platform
+EXP_ROOT=/tmp/exp-mvp npm run dev -- push-lite --file traj.json --task csv_analysis --acl public
+EXP_ROOT=/tmp/exp-mvp npm run dev -- search-lite --q "csv revenue by region"
+```
+
+## 创智内网发布
+
+Deployment assets live in `deploy/`:
+
+- `deploy/expool.service` — FastAPI API service on `127.0.0.1:8080`
+- `deploy/expool-ui.service` — Next.js UI on `127.0.0.1:3000`
+- `deploy/Caddyfile` — internal reverse proxy, API routes to `:8080`, UI to `:3000`
+- `deploy/Caddyfile.local` — local intranet gateway preview on `:3080`
+- `deploy/backup.sh` + `deploy/backup.cron` — SQLite hot backup and file archive
+- `deploy/docker-compose.yml` — container deployment alternative
+- `deploy/README.md` — step-by-step intranet install guide
+
+Local intranet-style preview:
+
+```bash
+./scripts/run-intranet-local.sh
+# open http://127.0.0.1:3080
+```
+
+Release gate:
+
+```bash
+./scripts/release_check.sh
+```
+
+Runtime health:
+
+```bash
+curl --noproxy '*' http://127.0.0.1:3080/__gateway/health
+curl --noproxy '*' http://127.0.0.1:3080/healthz
+exp dashboard   # or signed GET /v1/admin/healthz for deeper checks
+```
+
 **Standalone** (no Docker, no infra). SQLite + filesystem + in-process vectors. Real LLM via the `claude` CLI.
 
 ```bash

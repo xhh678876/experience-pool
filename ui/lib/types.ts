@@ -60,6 +60,9 @@ export type ExperienceRow = {
   task_type: string;
   source_model: string;
   created_at: string;
+  query?: string | null;
+  outcome?: string | null;
+  ingest_path?: string | null;
 
   intent_text: string | null;
   preconditions: string | null;

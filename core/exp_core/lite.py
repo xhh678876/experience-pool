@@ -21,9 +21,8 @@ The heavy machinery is still in pool.py and intentionally NOT called here.
 The sql columns (q_*, edges, etc.) stay zero/empty so we can flip the heavy
 path back on later without a schema change.
 
-ACL kinds accepted by this module: 'private' | 'team:<X>' | 'public' (alias
-for 'org' in the legacy code) | 'org'. Storage normalizes 'public' → 'org'
-to avoid duplicating ACL semantics.
+ACL kinds accepted by this module: 'private' | 'team:<X>' | 'public' | 'org'.
+Storage normalizes the legacy 'org' spelling to 'public' for the MVP path.
 """
 
 from __future__ import annotations
@@ -32,9 +31,10 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from . import llm
+from . import llm, opf_filter
 from .embeddings import cosine, embed, from_blob, to_blob
 from .identity import can_read, parse_acl
 from .sanitize import RuleSet, layer1_text, load_rules
@@ -195,9 +195,9 @@ def prepare_local(
 # ---------------------------------------------------------------------------
 
 def _normalize_acl(acl: str) -> str:
-    """Lite path accepts 'public' as an alias for 'org'."""
-    if acl == "public":
-        return "org"
+    """Lite path stores the MVP-facing 'public' spelling."""
+    if acl == "org":
+        return "public"
     return acl
 
 
@@ -207,8 +207,17 @@ def push_lite(
     rules: RuleSet,
     agent_name: str,
     card: LiteCard,
+    trajectory: list[dict[str, Any]] | None = None,
+    system: list[dict[str, Any]] | str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    meta: dict[str, Any] | None = None,
+    trajectories_dir: "Path | None" = None,
 ) -> dict[str, Any]:
     """Insert a lite card. Sanitize again server-side as belt-and-suspenders.
+
+    If `trajectory` is provided, it is sanitized (Layer 1) and stored as
+    `<trajectories_dir>/<eid>.json`, with the path recorded in
+    `experiences.trajectory_path` so the UI's Trajectory tab can render it.
 
     No judge, no extractor, no credit. The point is: searchable now."""
     cur = conn.execute("SELECT agent_id, team FROM agents WHERE name = ?", (agent_name,))
@@ -217,33 +226,199 @@ def push_lite(
         raise ValueError(f"unknown agent: {agent_name}")
     agent_id = row["agent_id"]
 
+    # Idempotent push (Ultron-style). If this exact trajectory + agent has
+    # been pushed before, return the existing experience_id without writing
+    # a new row. Allows daemon-tick to safely re-attempt without polluting
+    # the pool.
+    from . import quality as quality_mod
+    fingerprint = quality_mod.compute_fingerprint(trajectory)
+    if fingerprint:
+        existing = quality_mod.find_existing_by_fingerprint(
+            conn, fingerprint=fingerprint, agent_id=agent_id,
+        )
+        if existing:
+            return {
+                "experience_id": existing,
+                "duplicate_of": existing,
+                "fingerprint": fingerprint,
+                "ingest_path": "lite-dup",
+                "review_status": "auto_approved",
+                "sanitization_status": "skipped",
+                "redactions": {},
+            }
+
     # Server-side sanitize on every text field of the card.
+    # Layer 1 (regex) runs unconditionally; Layer 1.5 (OPF) runs whenever
+    # opf_filter is loadable. OPF results are recorded in the redactions
+    # dict prefixed with `opf_` so downstream audits can attribute them.
     redactions = dict(card.redactions)
     server_high = False
-    for attr in ("query", "intent", "outcome"):
-        val = getattr(card, attr)
-        if val:
-            cleaned, c, hi = layer1_text(val, rules)
-            setattr(card, attr, cleaned)
-            for k, v in c.items():
-                redactions[k] = redactions.get(k, 0) + v
-            server_high = server_high or hi
-    cleaned_steps: list[str] = []
-    for s in card.steps:
-        cleaned, c, hi = layer1_text(s, rules)
-        cleaned_steps.append(cleaned)
+    opf_high = False
+
+    def _scrub_str(val: str) -> str:
+        nonlocal server_high, opf_high
+        if not val:
+            return val
+        cleaned, c, hi = layer1_text(val, rules)
         for k, v in c.items():
             redactions[k] = redactions.get(k, 0) + v
         server_high = server_high or hi
-    card.steps = cleaned_steps
+        if opf_filter.is_enabled():
+            res = opf_filter.redact_text(cleaned)
+            if res.hits:
+                cleaned = res.text
+                for label, n in res.hits.items():
+                    key = f"opf_{label}"
+                    redactions[key] = redactions.get(key, 0) + n
+                opf_high = opf_high or res.triggered_high
+        return cleaned
 
+    for attr in ("query", "intent", "outcome"):
+        setattr(card, attr, _scrub_str(getattr(card, attr)))
+    card.steps = [_scrub_str(s) for s in card.steps]
+
+    # If a raw trajectory was sent, recursively sanitize every text-bearing
+    # field. Trajectories may use any of:
+    #   - flat shape:        {"role": "...", "content": "string"}
+    #   - Anthropic blocks:  {"role": "assistant",
+    #                         "content": [{"type":"text","text":"..."},
+    #                                     {"type":"tool_use","name":"Read",
+    #                                      "input":{"file_path":"..."}},
+    #                                     {"type":"tool_result",
+    #                                      "tool_use_id":"...",
+    #                                      "content":"..."}]}
+    #   - OpenAI tool_calls: {"role":"assistant","tool_calls":[...]} +
+    #                        {"role":"tool","tool_call_id":"...","content":"..."}
+    #
+    # We walk dicts/lists and apply Layer 1 to any string we find, regardless
+    # of nesting depth, so secrets in tool inputs / outputs cannot bypass.
+    cleaned_trajectory: list[dict[str, Any]] | None = None
+    if trajectory:
+        # Skip keys that are pure identifiers or types — sanitizing those
+        # would corrupt routing (tool_use_id, message id, role, etc.).
+        SKIP_KEYS = {
+            "id", "type", "role", "tool_use_id", "tool_call_id",
+            "name", "subtype", "model", "stop_reason", "stop_sequence",
+            "usage", "index",
+        }
+
+        opf_on = opf_filter.is_enabled()
+
+        def _walk(node: Any) -> Any:
+            nonlocal server_high, opf_high
+            if isinstance(node, str):
+                cleaned, counts, hi = layer1_text(node, rules)
+                for k, v in counts.items():
+                    redactions[k] = redactions.get(k, 0) + v
+                server_high = server_high or hi
+                if opf_on:
+                    res = opf_filter.redact_text(cleaned)
+                    if res.hits:
+                        cleaned = res.text
+                        for label, n in res.hits.items():
+                            key = f"opf_{label}"
+                            redactions[key] = redactions.get(key, 0) + n
+                        opf_high = opf_high or res.triggered_high
+                return cleaned
+            if isinstance(node, list):
+                return [_walk(item) for item in node]
+            if isinstance(node, dict):
+                out: dict[str, Any] = {}
+                for k, v in node.items():
+                    if k in SKIP_KEYS or not isinstance(v, (str, list, dict)):
+                        out[k] = v
+                    else:
+                        out[k] = _walk(v)
+                return out
+            return node
+
+        cleaned_trajectory = [
+            _walk(t) if isinstance(t, dict) else {"content": _walk(str(t))}
+            for t in trajectory
+        ]
+
+    # Sanitize system / tools / meta with the same recursive walker.
+    cleaned_system = None
+    cleaned_tools = None
+    cleaned_meta = None
+    if trajectory or system or tools or meta:
+        # Reuse the closure if it was created above; otherwise build it now.
+        if "_walk" not in dir():
+            SKIP_KEYS = {
+                "id", "type", "role", "tool_use_id", "tool_call_id",
+                "name", "subtype", "model", "stop_reason", "stop_sequence",
+                "usage", "index",
+            }
+            opf_on_aux = opf_filter.is_enabled()
+
+            def _walk(node: Any) -> Any:  # noqa: F811
+                nonlocal server_high, opf_high
+                if isinstance(node, str):
+                    cleaned, counts, hi = layer1_text(node, rules)
+                    for k, v in counts.items():
+                        redactions[k] = redactions.get(k, 0) + v
+                    server_high = server_high or hi
+                    if opf_on_aux:
+                        res = opf_filter.redact_text(cleaned)
+                        if res.hits:
+                            cleaned = res.text
+                            for label, n in res.hits.items():
+                                key = f"opf_{label}"
+                                redactions[key] = redactions.get(key, 0) + n
+                            opf_high = opf_high or res.triggered_high
+                    return cleaned
+                if isinstance(node, list):
+                    return [_walk(x) for x in node]
+                if isinstance(node, dict):
+                    return {
+                        k: (v if k in SKIP_KEYS or not isinstance(v, (str, list, dict)) else _walk(v))
+                        for k, v in node.items()
+                    }
+                return node
+
+        if system is not None:
+            cleaned_system = _walk(system)
+        if tools is not None:
+            cleaned_tools = _walk(tools)
+        if meta is not None:
+            cleaned_meta = _walk(meta)
+
+    # OPF `secret` hits are treated as high severity (regex missed them but
+    # OPF says they're credentials → human review, not auto-approved).
+    high_overall = server_high or opf_high
     sanitization_status = (
-        "human_review" if server_high else ("flagged" if redactions else "done")
+        "human_review" if high_overall else ("flagged" if redactions else "done")
     )
-    review_status = "pending" if server_high else "auto_approved"
+    review_status = "pending" if high_overall else "auto_approved"
 
     eid = str(uuid.uuid4())
     acl = _normalize_acl(card.acl)
+
+    trajectory_path: str | None = None
+    has_payload = (
+        cleaned_trajectory is not None
+        or cleaned_system is not None
+        or cleaned_tools is not None
+        or cleaned_meta is not None
+    )
+    if has_payload and trajectories_dir is not None:
+        trajectories_dir.mkdir(parents=True, exist_ok=True)
+        traj_file = trajectories_dir / f"{eid}.json"
+        sidecar: dict[str, Any] = {}
+        if cleaned_trajectory is not None:
+            sidecar["trajectory"] = cleaned_trajectory
+        if cleaned_system is not None:
+            sidecar["system"] = cleaned_system
+        if cleaned_tools is not None:
+            sidecar["tools"] = cleaned_tools
+        if cleaned_meta is not None:
+            sidecar["meta"] = cleaned_meta
+        traj_file.write_text(
+            json.dumps(sidecar, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        trajectory_path = str(traj_file)
+
     conn.execute(
         """
         INSERT INTO experiences (
@@ -251,8 +426,8 @@ def push_lite(
             query, intent_text, script_steps, outcome, summary,
             sensitivity, acl, tags,
             sanitization_status, review_status, extraction_status,
-            ingest_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ingest_path, trajectory_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             eid, agent_id, card.task_type, card.source_model,
@@ -260,7 +435,7 @@ def push_lite(
             card.outcome,  # also fill summary so existing UI shows something
             card.sensitivity, acl, json.dumps(card.tags),
             sanitization_status, review_status, "done",
-            "lite",
+            "lite", trajectory_path,
         ),
     )
 
@@ -280,9 +455,23 @@ def push_lite(
         (agent_name, "agent", "push_lite", eid,
          json.dumps({"redactions": redactions,
                      "sanitization_status": sanitization_status,
-                     "task_type": card.task_type})),
+                     "task_type": card.task_type,
+                     "opf_status": opf_filter.status()})),
     )
     conn.commit()
+
+    # Record fingerprint + compute structural metrics + initial quality.
+    # All defensive — wrap in try so a quality calc error never breaks push.
+    try:
+        quality_mod.record_fingerprint(
+            conn, fingerprint=fingerprint, experience_id=eid, agent_id=agent_id,
+        )
+        quality_mod.attach_structural_metrics(
+            conn, experience_id=eid, trajectory=cleaned_trajectory or trajectory,
+        )
+        quality_mod.recompute_quality(conn, experience_id=eid)
+    except Exception:
+        pass
     return {
         "experience_id": eid,
         "review_status": review_status,
@@ -347,12 +536,13 @@ def search_lite(
             "similarity": sim,
         })
     # Bump visit_count (kept for future Q work; harmless in v0).
-    if scored:
+    if scored and top_k > 0:
         ids = [r["experience_id"] for _, r in scored[:top_k]]
-        conn.execute(
-            "UPDATE experiences SET visit_count = visit_count + 1 "
-            f"WHERE experience_id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-        conn.commit()
+        if ids:
+            conn.execute(
+                "UPDATE experiences SET visit_count = visit_count + 1 "
+                f"WHERE experience_id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+            conn.commit()
     return out

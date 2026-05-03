@@ -1,10 +1,10 @@
-import Link from "next/link";
+import Link, { withBase } from "@/components/ui/link";
 import { distinctValues, listExperiences } from "@/lib/queries";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { sensitivityColor, shortId, statusColor } from "@/lib/utils";
+import { formatDate, sensitivityColor, shortId, statusColor } from "@/lib/utils";
+import { Database, Filter, Search, X } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +13,15 @@ type SearchParams = {
   task?: string;
   sensitivity?: string;
   q?: string;
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  all: "全部状态",
+  pending: "待审",
+  approved: "已通过",
+  auto_approved: "自动通过",
+  rejected: "已拒",
+  edited: "编辑过",
 };
 
 export default async function ExperiencesPage({
@@ -31,138 +40,156 @@ export default async function ExperiencesPage({
 
   const taskTypes = distinctValues("task_type");
   const sensitivities = distinctValues("sensitivity");
-  const statuses = ["pending", "approved", "rejected", "edited"];
+  const statuses = distinctValues("review_status");
+  const hasFilters = Boolean(sp.status || sp.task || sp.sensitivity || sp.q);
 
   return (
-    <div className="grid grid-cols-12 gap-6">
-      <aside className="col-span-12 lg:col-span-3 space-y-6">
-        <div>
-          <h2 className="text-sm font-medium uppercase tracking-wide text-muted-foreground mb-3">
-            Search
-          </h2>
-          <form action="/experiences" method="get" className="space-y-2">
+    <div className="flex flex-col gap-6 pb-12">
+      {/* HEADER */}
+      <section className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-white/85 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Database className="h-3.5 w-3.5" />
+            全库
+          </div>
+          <h1 className="mt-1 text-xl font-semibold tracking-tight">经验库</h1>
+          <p className="mt-1 text-xs text-muted-foreground">
+            当前条件命中 <span className="font-mono text-foreground">{items.length}</span> 条 ·
+            按上传时间倒序
+          </p>
+        </div>
+        <form
+          action={withBase("/experiences")}
+          method="get"
+          className="flex w-full items-center gap-2 sm:w-auto"
+        >
+          {sp.status ? <input type="hidden" name="status" value={sp.status} /> : null}
+          {sp.task ? <input type="hidden" name="task" value={sp.task} /> : null}
+          {sp.sensitivity ? <input type="hidden" name="sensitivity" value={sp.sensitivity} /> : null}
+          <div className="flex w-full items-center gap-2 rounded-xl border border-border/60 bg-white px-3 py-1.5 sm:w-72">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <Input
               name="q"
               defaultValue={sp.q ?? ""}
-              placeholder="Search intent or id"
+              placeholder="搜索 intent 或 ID"
+              className="h-7 border-0 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0"
             />
-            {sp.status ? <input type="hidden" name="status" value={sp.status} /> : null}
-            {sp.task ? <input type="hidden" name="task" value={sp.task} /> : null}
-            {sp.sensitivity ? (
-              <input type="hidden" name="sensitivity" value={sp.sensitivity} />
-            ) : null}
-            <Button type="submit" variant="outline" size="sm" className="w-full">
-              Search
-            </Button>
-          </form>
-        </div>
+          </div>
+          <Button type="submit" size="sm" className="h-9 rounded-xl px-4">
+            搜索
+          </Button>
+          {hasFilters ? (
+            <Link
+              href="/experiences"
+              className="inline-flex h-9 items-center gap-1 rounded-xl border border-border/60 bg-white/80 px-3 text-xs text-muted-foreground hover:border-rose-400/50 hover:text-rose-700"
+            >
+              <X className="h-3.5 w-3.5" />
+              清空
+            </Link>
+          ) : null}
+        </form>
+      </section>
 
-        <FilterGroup
-          title="Review status"
+      {/* FILTER CHIPS */}
+      <section className="flex flex-col gap-2 rounded-2xl border border-border/60 bg-white/70 px-4 py-3">
+        <FilterRow
+          icon={<Filter className="h-3.5 w-3.5" />}
+          label="状态"
           name="status"
           values={["all", ...statuses]}
           current={sp.status ?? "all"}
           sp={sp}
+          renderLabel={(v) => STATUS_LABELS[v] ?? v}
         />
-        <FilterGroup
-          title="Task type"
+        <FilterRow
+          label="任务"
           name="task"
           values={["all", ...taskTypes]}
           current={sp.task ?? "all"}
           sp={sp}
         />
-        <FilterGroup
-          title="Sensitivity"
+        <FilterRow
+          label="敏感度"
           name="sensitivity"
           values={["all", ...sensitivities]}
           current={sp.sensitivity ?? "all"}
           sp={sp}
         />
-      </aside>
-
-      <section className="col-span-12 lg:col-span-9">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-semibold tracking-tight">Experiences</h1>
-          <span className="text-sm text-muted-foreground">{items.length} shown</span>
-        </div>
-
-        <Card>
-          <CardContent className="p-0 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground bg-muted/40">
-                <tr>
-                  <th className="px-4 py-3 font-medium">id</th>
-                  <th className="px-4 py-3 font-medium">intent</th>
-                  <th className="px-4 py-3 font-medium">task</th>
-                  <th className="px-4 py-3 font-medium">model</th>
-                  <th className="px-4 py-3 font-medium">q</th>
-                  <th className="px-4 py-3 font-medium">reuse</th>
-                  <th className="px-4 py-3 font-medium">status</th>
-                  <th className="px-4 py-3 font-medium">sensitivity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
-                      No experiences match the current filters.
-                    </td>
-                  </tr>
-                ) : (
-                  items.map((e) => (
-                    <tr key={e.experience_id} className="border-t hover:bg-muted/30">
-                      <td className="px-4 py-3 font-mono text-xs">
-                        <Link
-                          href={`/experiences/${e.experience_id}`}
-                          className="hover:underline"
-                        >
-                          {shortId(e.experience_id)}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3 max-w-md">
-                        <Link
-                          href={`/experiences/${e.experience_id}`}
-                          className="hover:underline line-clamp-2"
-                        >
-                          {e.intent_text ?? "-"}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{e.task_type}</td>
-                      <td className="px-4 py-3 text-muted-foreground text-xs">
-                        {e.source_model}
-                      </td>
-                      <td className="px-4 py-3 tabular-nums">{e.q_scalar.toFixed(2)}</td>
-                      <td className="px-4 py-3 tabular-nums">{e.reuse_count}</td>
-                      <td className="px-4 py-3">
-                        <Badge className={statusColor(e.review_status)}>{e.review_status}</Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge className={sensitivityColor(e.sensitivity)}>{e.sensitivity}</Badge>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
       </section>
+
+      {/* CARD GRID */}
+      {items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border/70 bg-white/50 px-6 py-16 text-center">
+          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg border border-border/70 bg-muted/40">
+            <Search className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <div className="mt-3 text-sm font-medium">没有匹配的经验</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            换个筛选条件或直接
+            <Link href="/experiences" className="ml-1 underline-offset-4 hover:underline">
+              清空筛选
+            </Link>
+            。
+          </p>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {items.map((e) => (
+            <Link
+              key={e.experience_id}
+              href={`/experiences/${e.experience_id}`}
+              className="group flex flex-col gap-3 rounded-xl border border-border/60 bg-white/95 p-4 transition hover:-translate-y-0.5 hover:border-cyan-600/40 hover:shadow-lg hover:shadow-cyan-900/5"
+            >
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge className={`text-[11px] ${statusColor(e.review_status)}`}>
+                  {STATUS_LABELS[e.review_status] ?? e.review_status}
+                </Badge>
+                <Badge className={`text-[11px] ${sensitivityColor(e.sensitivity)}`}>
+                  {e.sensitivity}
+                </Badge>
+                <Badge variant="outline" className="border-border/60 bg-white/40 text-[11px] text-muted-foreground">
+                  {e.task_type}
+                </Badge>
+              </div>
+              <h3 className="line-clamp-2 text-sm font-semibold leading-6 text-foreground group-hover:text-cyan-900">
+                {e.intent_text || "(无 intent)"}
+              </h3>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span className="font-mono">{shortId(e.experience_id)}</span>
+                <span className="font-mono">{e.source_model}</span>
+              </div>
+              <div className="mt-auto flex items-center justify-between gap-3 border-t border-border/50 pt-3 text-[11px]">
+                <span className="text-muted-foreground">
+                  Q <span className="font-mono text-foreground">{e.q_scalar.toFixed(2)}</span>
+                  <span className="mx-1.5">·</span>
+                  reuse <span className="font-mono text-foreground">{e.reuse_count}</span>
+                </span>
+                <span className="font-mono text-muted-foreground">{formatDate(e.created_at)}</span>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function FilterGroup({
-  title,
+function FilterRow({
+  icon,
+  label,
   name,
   values,
   current,
   sp,
+  renderLabel,
 }: {
-  title: string;
+  icon?: React.ReactNode;
+  label: string;
   name: keyof SearchParams;
   values: string[];
   current: string;
   sp: SearchParams;
+  renderLabel?: (v: string) => string;
 }) {
   function buildHref(value: string): string {
     const params = new URLSearchParams();
@@ -175,26 +202,29 @@ function FilterGroup({
   }
 
   return (
-    <div>
-      <h2 className="text-sm font-medium uppercase tracking-wide text-muted-foreground mb-3">
-        {title}
-      </h2>
-      <ul className="space-y-1">
-        {values.map((v) => (
-          <li key={v}>
-            <Link
-              href={buildHref(v)}
-              className={`block text-sm rounded-md px-2 py-1 ${
-                current === v
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              {v}
-            </Link>
-          </li>
-        ))}
-      </ul>
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="inline-flex shrink-0 items-center gap-1 text-[11px] uppercase tracking-wider text-muted-foreground">
+        {icon}
+        {label}
+      </span>
+      {values.map((v) => {
+        const active = v === current;
+        const labelText = renderLabel ? renderLabel(v) : v === "all" ? "全部" : v;
+        return (
+          <Link
+            key={v}
+            href={buildHref(v)}
+            className={
+              "inline-flex h-7 items-center gap-1 rounded-full border px-3 text-xs transition " +
+              (active
+                ? "border-cyan-700 bg-cyan-700 text-white shadow-sm"
+                : "border-border/60 bg-white text-muted-foreground hover:border-cyan-600/40 hover:text-cyan-800")
+            }
+          >
+            {labelText}
+          </Link>
+        );
+      })}
     </div>
   );
 }

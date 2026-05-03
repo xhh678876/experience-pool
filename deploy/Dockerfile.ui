@@ -1,0 +1,19 @@
+FROM node:22-slim AS deps
+WORKDIR /app/ui
+COPY ui/package.json ./
+RUN npm install
+
+FROM node:22-slim AS build
+WORKDIR /app/ui
+COPY --from=deps /app/ui/node_modules ./node_modules
+COPY ui ./
+RUN npm run build
+
+FROM node:22-slim
+WORKDIR /app/ui
+ENV NODE_ENV=production
+ENV EXP_DB_PATH=/var/lib/expool/pool.db
+COPY --from=build /app/ui ./
+VOLUME ["/var/lib/expool"]
+EXPOSE 3000
+CMD ["npm", "run", "start", "--", "--hostname", "0.0.0.0", "--port", "3000"]

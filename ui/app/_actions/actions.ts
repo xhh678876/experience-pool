@@ -5,6 +5,34 @@ import { redirect } from "next/navigation";
 import { getDb } from "@/lib/db";
 import { actorString, getReviewerName } from "@/lib/auth";
 
+type NoticeKind = "success" | "warn" | "danger";
+
+function actionReturnTo(id: string, formData: FormData): string {
+  const raw = String(formData.get("returnTo") ?? "").trim();
+  const fallback = `/experiences/${encodeURIComponent(id)}`;
+  if (!raw.startsWith(`/experiences/${id}`)) return fallback;
+  try {
+    const url = new URL(raw, "http://experience-pool.local");
+    url.searchParams.delete("notice");
+    url.searchParams.delete("noticeKind");
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return fallback;
+  }
+}
+
+function redirectWithNotice(
+  id: string,
+  formData: FormData,
+  notice: string,
+  noticeKind: NoticeKind = "success",
+): never {
+  const url = new URL(actionReturnTo(id, formData), "http://experience-pool.local");
+  url.searchParams.set("notice", notice);
+  url.searchParams.set("noticeKind", noticeKind);
+  redirect(`${url.pathname}${url.search}`);
+}
+
 function appendAudit(
   actor: string,
   action: string,
@@ -42,6 +70,7 @@ export async function approveAction(formData: FormData): Promise<void> {
   revalidatePath(`/experiences/${id}`);
   revalidatePath("/experiences");
   revalidatePath("/");
+  redirectWithNotice(id, formData, "已通过并写入审计日志");
 }
 
 export async function rejectAction(formData: FormData): Promise<void> {
@@ -59,6 +88,7 @@ export async function rejectAction(formData: FormData): Promise<void> {
   revalidatePath(`/experiences/${id}`);
   revalidatePath("/experiences");
   revalidatePath("/");
+  redirectWithNotice(id, formData, "已拒绝并记录原因", "warn");
 }
 
 export async function softDeleteAction(formData: FormData): Promise<void> {
@@ -87,6 +117,7 @@ export async function softDeleteAction(formData: FormData): Promise<void> {
   revalidatePath(`/experiences/${id}`);
   revalidatePath("/experiences");
   revalidatePath("/");
+  redirectWithNotice(id, formData, "已标记为 soft_deleted", "warn");
 }
 
 export async function rejudgeAction(formData: FormData): Promise<void> {
@@ -96,11 +127,19 @@ export async function rejudgeAction(formData: FormData): Promise<void> {
   const reviewer = await getReviewerName();
   const actor = actorString(reviewer);
   const db = getDb();
-  db.prepare(
-    "INSERT INTO pending_rejudge (experience_id) VALUES (?)",
-  ).run(id);
-  appendAudit(actor, "rejudge_requested", id, { reviewer });
+  const queued = db
+    .prepare(
+      "SELECT 1 FROM pending_rejudge WHERE experience_id = ? AND processed = 0 LIMIT 1",
+    )
+    .get(id);
+  if (!queued) {
+    db.prepare(
+      "INSERT INTO pending_rejudge (experience_id) VALUES (?)",
+    ).run(id);
+  }
+  appendAudit(actor, "rejudge_requested", id, { reviewer, alreadyQueued: Boolean(queued) });
   revalidatePath(`/experiences/${id}`);
+  redirectWithNotice(id, formData, queued ? "这条经验已在重判队列中" : "已加入重判队列");
 }
 
 const EDITABLE_FIELDS = [
@@ -134,16 +173,29 @@ export async function editCardAction(formData: FormData): Promise<void> {
     ).run(...params);
   }
   // Queue the experience for re-embedding by the Python sidecar.
-  db.prepare(
-    "INSERT INTO pending_reembed (experience_id) VALUES (?)",
-  ).run(id);
+  const queued = db
+    .prepare(
+      "SELECT 1 FROM pending_reembed WHERE experience_id = ? AND processed = 0 LIMIT 1",
+    )
+    .get(id);
+  if (!queued) {
+    db.prepare(
+      "INSERT INTO pending_reembed (experience_id) VALUES (?)",
+    ).run(id);
+  }
   appendAudit(actor, "edit_card", id, {
     reviewer,
     fields: updates.map((u) => u.col),
+    alreadyQueued: Boolean(queued),
   });
   revalidatePath(`/experiences/${id}`);
   revalidatePath("/experiences");
   revalidatePath("/");
+  redirectWithNotice(
+    id,
+    formData,
+    queued ? "编辑已保存，这条经验已在重新 embedding 队列中" : "编辑已保存，已加入重新 embedding 队列",
+  );
 }
 
 export async function exportJsonAction(formData: FormData): Promise<void> {

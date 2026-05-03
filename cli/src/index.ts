@@ -249,6 +249,7 @@ program
   .option("--sensitivity <s>", "low|medium|high", "medium")
   .option("--acl <acl>", "private|team:<X>|public", "private")
   .option("--tag <tag>", "Repeat to add tags", collect, [])
+  .option("--no-trace", "Send only the compressed LiteCard, drop the raw trajectory")
   .action(async (opts, cmd) => {
     const client = buildClient(cmd, true);
     const raw = JSON.parse(fs.readFileSync(opts.file, "utf-8"));
@@ -260,7 +261,12 @@ program
       acl: opts.acl,
       tags: opts.tag ?? [],
     });
-    const result = await client.request<unknown>("POST", "/v1/lite/push", card);
+    // Default: include raw trajectory so the server stores it for the
+    // Trajectory tab. Pass --no-trace to keep the old card-only behavior.
+    const body = opts.trace === false
+      ? card
+      : { ...card, trajectory };
+    const result = await client.request<unknown>("POST", "/v1/lite/push", body);
     console.log(JSON.stringify(result, null, 2));
   });
 

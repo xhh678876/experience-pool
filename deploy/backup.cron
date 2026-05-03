@@ -1,0 +1,2 @@
+# Daily 03:00 UTC SQLite hot backup for Experience Pool.
+0 3 * * * expool EXP_ROOT=/var/lib/expool BACKUP_ROOT=/var/backups/expool /opt/experience-pool/deploy/backup.sh >> /var/log/expool-backup.log 2>&1

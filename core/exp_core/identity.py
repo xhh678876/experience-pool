@@ -7,10 +7,10 @@ Two concerns kept separate:
    single-tenant local deployments. For multi-tenant we'd swap to JWT signed
    by an enterprise SSO; the call-site interface is the same.
 
-2. **ACL**: each experience has acl in {private, team:<dept>, org}.
+2. **ACL**: each experience has acl in {private, team:<dept>, public/org}.
    - private  : only the originating agent can read
    - team:<X> : agents on team X can read
-   - org      : everyone can read
+   - public   : everyone can read (`org` is kept as a legacy alias)
    `can_read(viewer_agent, experience_row)` returns bool.
 
 A pool method `pool.search_with_acl(agent_name, query, ...)` filters the
@@ -97,11 +97,15 @@ def verify_signature(secret: str, method: str, path: str, body: bytes, signature
 
 
 def parse_acl(acl: str) -> tuple[str, str | None]:
-    """Returns (kind, team). kind in {'private', 'team', 'org'}."""
+    """Returns (kind, team). kind in {'private', 'team', 'public'}.
+
+    `org` is accepted as a legacy alias for `public` so existing pools remain
+    readable while the MVP-facing terminology stays private/team/public.
+    """
     if acl == "private":
         return ("private", None)
-    if acl == "org":
-        return ("org", None)
+    if acl in {"public", "org"}:
+        return ("public", None)
     if acl.startswith("team:"):
         return ("team", acl.split(":", 1)[1])
     # Unknown → treat as private to fail closed.
@@ -110,7 +114,7 @@ def parse_acl(acl: str) -> tuple[str, str | None]:
 
 def can_read(viewer_agent_id: str, viewer_team: str, owner_agent_id: str, acl: str) -> bool:
     kind, team = parse_acl(acl)
-    if kind == "org":
+    if kind == "public":
         return True
     if kind == "private":
         return viewer_agent_id == owner_agent_id

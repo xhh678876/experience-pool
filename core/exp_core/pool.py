@@ -80,6 +80,12 @@ class ExperiencePool:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self._apply_lite_migrations()
+        # Quality / fingerprint / metrics columns (Ultron-borrowed).
+        try:
+            from . import quality as _q
+            _q.ensure_quality_columns(self.conn)
+        except Exception:
+            pass
         self.conn.commit()
         # Load rules once at startup; tests can inject a custom RuleSet.
         self._sanitize_rules = sanitize_rules or load_rules()

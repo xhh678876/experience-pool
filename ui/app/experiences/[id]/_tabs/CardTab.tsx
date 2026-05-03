@@ -10,6 +10,21 @@ type ScriptStep = {
   [k: string]: unknown;
 };
 
+type RawStep = string | ScriptStep;
+
+function isLiteIngest(experience: ExperienceListItem): boolean {
+  return (experience.ingest_path ?? "full") === "lite";
+}
+
+function normalizeSteps(raw: RawStep[]): ScriptStep[] {
+  return raw.map((s, i) => {
+    if (typeof s === "string") {
+      return { step: i + 1, what: s };
+    }
+    return s;
+  });
+}
+
 export function CardTab({
   experience,
   reward,
@@ -19,24 +34,41 @@ export function CardTab({
   reward: RewardRow | null;
   updates: QUpdateRow[];
 }) {
-  const steps = tryParseJson<ScriptStep[]>(experience.script_steps) ?? [];
+  const rawSteps = tryParseJson<RawStep[]>(experience.script_steps) ?? [];
+  const steps = normalizeSteps(rawSteps);
   const tools = tryParseJson<string[]>(experience.tool_capabilities) ?? [];
   const decisions = tryParseJson<string[] | KeyDecision[]>(experience.key_decisions) ?? [];
   const pitfalls = tryParseJson<string[]>(experience.pitfalls) ?? [];
   const preconditions = tryParseJson<string[]>(experience.preconditions) ?? [];
+  const lite = isLiteIngest(experience);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 space-y-6">
+        {experience.query ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>用户原始 query</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                {experience.query}
+              </p>
+            </CardContent>
+          </Card>
+        ) : null}
+
         <Card>
           <CardHeader>
-            <CardTitle>Intent</CardTitle>
+            <CardTitle>意图</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm leading-relaxed">
-              {experience.intent_text ?? <span className="text-muted-foreground">No intent extracted.</span>}
+              {experience.intent_text ?? (
+                <span className="text-muted-foreground">未提取意图。</span>
+              )}
             </p>
-            {experience.summary ? (
+            {experience.summary && experience.summary !== experience.intent_text ? (
               <p className="text-sm text-muted-foreground mt-3 leading-relaxed">
                 {experience.summary}
               </p>
@@ -46,120 +78,145 @@ export function CardTab({
 
         <Card>
           <CardHeader>
-            <CardTitle>Preconditions</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {preconditions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">None.</p>
-            ) : (
-              <ul className="text-sm list-disc pl-5 space-y-1">
-                {preconditions.map((p, i) => (
-                  <li key={i}>{String(p)}</li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Script steps</CardTitle>
+            <CardTitle>关键步骤</CardTitle>
           </CardHeader>
           <CardContent>
             {steps.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No script steps were extracted.
-              </p>
+              <p className="text-sm text-muted-foreground">未提取步骤。</p>
             ) : (
               <ol className="space-y-4">
-                {steps.map((s, i) => (
-                  <li key={i} className="border-l-2 border-foreground/30 pl-4">
-                    <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Step {s.step ?? i + 1}
-                    </div>
-                    <div className="text-sm font-medium mt-1">{s.what ?? ""}</div>
-                    {s.why ? (
-                      <div className="text-sm text-muted-foreground mt-1">
-                        <span className="font-medium text-foreground/80">why: </span>
-                        {s.why}
+                {steps.map((s, i) => {
+                  const stepNo = s.step ?? i + 1;
+                  const body = s.what ?? "";
+                  return (
+                    <li key={i} className="border-l-2 border-foreground/30 pl-4">
+                      <div className="text-xs text-muted-foreground">步骤 {stepNo}</div>
+                      <div className="text-sm font-medium mt-1 whitespace-pre-wrap">
+                        {body || <span className="text-muted-foreground italic">(空)</span>}
                       </div>
-                    ) : null}
-                    {s.how ? (
-                      <div className="text-sm text-muted-foreground mt-1">
-                        <span className="font-medium text-foreground/80">how: </span>
-                        {s.how}
-                      </div>
-                    ) : null}
-                  </li>
-                ))}
+                      {s.why ? (
+                        <div className="text-sm text-muted-foreground mt-1">
+                          <span className="font-medium text-foreground/80">why: </span>
+                          {s.why}
+                        </div>
+                      ) : null}
+                      {s.how ? (
+                        <div className="text-sm text-muted-foreground mt-1">
+                          <span className="font-medium text-foreground/80">how: </span>
+                          {s.how}
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ol>
             )}
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Tool capabilities</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {tools.length === 0 ? (
-              <p className="text-sm text-muted-foreground">None.</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {tools.map((t, i) => (
-                  <span
-                    key={i}
-                    className="text-xs font-mono px-2 py-1 rounded-md bg-muted border"
-                  >
-                    {String(t)}
-                  </span>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        {experience.outcome ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>结果 / outcome</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                {experience.outcome}
+              </p>
+            </CardContent>
+          </Card>
+        ) : null}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Key decisions</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {decisions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">None.</p>
-            ) : (
-              <ul className="text-sm list-disc pl-5 space-y-1">
-                {decisions.map((d, i) => {
-                  if (typeof d === "string") return <li key={i}>{d}</li>;
-                  return (
-                    <li key={i}>
-                      <span className="font-medium">{d.decision ?? ""}</span>
-                      {d.rationale ? (
-                        <span className="text-muted-foreground"> — {d.rationale}</span>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+        {lite ? (
+          <div className="rounded-md border border-amber-300/50 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            这条是 <span className="font-mono">lite</span> 上传，仅含 query / intent / steps / outcome 四字段。
+            前置条件、工具能力、关键决策、风险点这些字段需要走完整 extractor pipeline 才会有，
+            目前未启用。可以点上方"轨迹"tab 看原始多轮内容（如果上传时附带了 trajectory）。
+          </div>
+        ) : (
+          <>
+            <Card>
+              <CardHeader>
+                <CardTitle>前置条件</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {preconditions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">无。</p>
+                ) : (
+                  <ul className="text-sm list-disc pl-5 space-y-1">
+                    {preconditions.map((p, i) => (
+                      <li key={i}>{String(p)}</li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Pitfalls</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {pitfalls.length === 0 ? (
-              <p className="text-sm text-muted-foreground">None.</p>
-            ) : (
-              <ul className="text-sm list-disc pl-5 space-y-1">
-                {pitfalls.map((p, i) => (
-                  <li key={i}>{String(p)}</li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>工具能力</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {tools.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">无。</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {tools.map((t, i) => (
+                      <span
+                        key={i}
+                        className="text-xs font-mono px-2 py-1 rounded-md bg-muted border"
+                      >
+                        {String(t)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>关键决策</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {decisions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">无。</p>
+                ) : (
+                  <ul className="text-sm list-disc pl-5 space-y-1">
+                    {decisions.map((d, i) => {
+                      if (typeof d === "string") return <li key={i}>{d}</li>;
+                      return (
+                        <li key={i}>
+                          <span className="font-medium">{d.decision ?? ""}</span>
+                          {d.rationale ? (
+                            <span className="text-muted-foreground"> — {d.rationale}</span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>风险点</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {pitfalls.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">无。</p>
+                ) : (
+                  <ul className="text-sm list-disc pl-5 space-y-1">
+                    {pitfalls.map((p, i) => (
+                      <li key={i}>{String(p)}</li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          </>
+        )}
       </div>
 
       <div className="space-y-6">
@@ -177,11 +234,11 @@ function RewardCard({ reward }: { reward: RewardRow | null }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Latest reward</CardTitle>
+        <CardTitle>最新评分</CardTitle>
       </CardHeader>
       <CardContent>
         {!reward ? (
-          <p className="text-sm text-muted-foreground">No judge reward yet.</p>
+          <p className="text-sm text-muted-foreground">暂无 judge 评分。</p>
         ) : (
           <>
             <RewardRow5
@@ -205,8 +262,8 @@ function RewardCard({ reward }: { reward: RewardRow | null }) {
             </div>
             {reward.rationale ? (
               <div className="mt-3 pt-3 border-t">
-                <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-                  Rationale
+                <div className="mb-1 text-xs text-muted-foreground">
+                  理由
                 </div>
                 <p className="text-sm whitespace-pre-wrap leading-relaxed">{reward.rationale}</p>
               </div>
@@ -252,7 +309,7 @@ function QStateCard({ experience }: { experience: ExperienceListItem }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Q state</CardTitle>
+        <CardTitle>Q 状态</CardTitle>
       </CardHeader>
       <CardContent>
         <RewardRow5 label="q_outcome" value={experience.q_outcome} />
@@ -272,11 +329,11 @@ function QHistoryCard({ updates }: { updates: QUpdateRow[] }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Q history</CardTitle>
+        <CardTitle>Q 历史</CardTitle>
       </CardHeader>
       <CardContent>
         {updates.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No q updates yet.</p>
+          <p className="text-sm text-muted-foreground">暂无 q 更新。</p>
         ) : (
           <ul className="space-y-3 text-xs">
             {updates.map((u) => (
@@ -311,7 +368,7 @@ function Delta({ label, v }: { label: string; v: number | null }) {
   if (v == null) {
     return (
       <div className="text-center text-muted-foreground/50">
-        <div className="text-[10px] uppercase">{label}</div>
+        <div className="text-[10px]">{label}</div>
         <div>-</div>
       </div>
     );
@@ -319,7 +376,7 @@ function Delta({ label, v }: { label: string; v: number | null }) {
   const positive = v >= 0;
   return (
     <div className="text-center">
-      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
+      <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className={positive ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}>
         {positive ? "+" : ""}
         {v.toFixed(2)}

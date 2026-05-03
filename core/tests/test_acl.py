@@ -26,7 +26,8 @@ def trajectory(extra: str = "") -> list[dict]:
 
 def test_parse_acl():
     assert parse_acl("private") == ("private", None)
-    assert parse_acl("org") == ("org", None)
+    assert parse_acl("public") == ("public", None)
+    assert parse_acl("org") == ("public", None)  # legacy alias
     assert parse_acl("team:platform") == ("team", "platform")
     assert parse_acl("garbage") == ("private", None)  # fail closed
 

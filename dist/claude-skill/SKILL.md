@@ -1,6 +1,6 @@
 ---
 name: experience-pool
-description: Share completed work and learn from peers. Upload trajectories, declare which skills you used, and search the team pool for proven playbooks before starting a new task.
+description: Search and share MVP Lite experience cards through the intranet Experience Pool before starting similar work.
 version: 0.1.0
 triggers:
   - share experience
@@ -12,8 +12,11 @@ triggers:
 
 # experience-pool
 
-This skill plugs your Claude Code agent into the team's Experience Pool. Three
-concrete workflows:
+This skill plugs your Claude Code agent into the team's Experience Pool MVP.
+The current intranet release is the Lite path: local redaction and light
+structuring on the agent side, HMAC upload, SQLite + embeddings on the server,
+ACL-filtered vector search. Do not assume judge scores, credit feedback, or a
+skill marketplace are active yet.
 
 ## 1. Before you start a task — search for prior playbooks
 
@@ -21,48 +24,34 @@ When the user asks for something you might have solved before (or someone else
 on the team has):
 
 ```bash
-exp search --q "<one-line description of the task>" --top-k 5
-exp search-skills --q "<task domain>" --top-k 3
+exp search-lite --q "<one-line description of the task>" --top-k 5
 ```
 
-Each result includes a model-agnostic script (steps with why+how), pitfalls,
-and a `q_scalar` reflecting how well prior attempts went. **Read the top hit
-before writing your own plan.** If a returned skill looks relevant:
-
-```bash
-exp install-skill --name <skill-name> --target ./vendor/skills/<skill-name>
-```
-
-That extracts the bundle locally so you can read its `SKILL.md` directly.
+Each result includes query, intent, steps, outcome, task type, ACL, and vector
+similarity. Read the top hit before writing your own plan, then summarize which
+steps you reused.
 
 ## 2. After you finish a task — upload the trajectory
 
 When the work is done (good outcome or bad — both teach):
 
 ```bash
-exp push \
+exp push-lite \
     --task <task_type> \
     --model <model_id> \
     --file <trajectory.json> \
-    --uses-skill <skill_name> \
-    --parents <experience_id_you_referenced>
+    --acl private
 ```
 
 The trajectory format is `{"trajectory": [{"role": "user"|"assistant", "content": "..."}, ...]}`.
-The pool will sanitize PII/secrets, distill an experience card, score on five
-dimensions, and embed it for retrieval. Declared parents earn delayed credit
-when your judge reward arrives, so be honest about what you actually used.
+The CLI sanitizes obvious PII/secrets and distills query, intent, steps,
+outcome, tags, and metadata locally before uploading the Lite card.
 
-## 3. Upload a reusable skill
+Use ACL deliberately:
 
-If you wrote a `SKILL.md` + helper scripts that you want others to use:
-
-```bash
-exp push-skill --bundle ./path/to/skill-dir \
-    --sensitivity low --acl team:<your-team>
-```
-
-The skill earns Q values automatically when downstream agents using it succeed.
+- `private` for personal scratch work
+- `team:<team-name>` for team reuse
+- `public` for all agents on the intranet
 
 ## Authentication
 
@@ -75,12 +64,12 @@ exp register --name <agent-name> --team <team-name>
 This drops a credential at `~/.experience-pool/credentials/<name>.json` (mode
 0600). All subsequent calls auto-sign with HMAC-SHA256.
 
-The default server is `http://localhost:8080`. Override with `--base <url>` or
-`EXP_BASE_URL`. Your team's deployment URL is whatever your platform team
-shared (probably an internal hostname).
+The local gateway preview is `http://127.0.0.1:3080`. Override with
+`--base <url>` or `EXP_BASE_URL` when the platform team publishes the internal
+hostname.
 
 ## Output discipline
 
 Don't paste the full JSON from these CLI calls into the user-facing reply.
-Summarize: which prior experience you adopted, what the q_scalar told you,
-and what you decided to do.
+Summarize: which prior experience you adopted, why it matched, and which steps
+you decided to reuse.

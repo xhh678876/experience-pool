@@ -1,0 +1,42 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    environment:
+      EXP_ROOT: /var/lib/expool
+      EXP_RATE_LIMIT_ENABLED: "1"
+    volumes:
+      - expool-data:/var/lib/expool
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  ui:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.ui
+    environment:
+      EXP_DB_PATH: /var/lib/expool/pool.db
+    volumes:
+      - expool-data:/var/lib/expool
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+
+  gateway:
+    image: caddy:2-alpine
+    environment:
+      EXP_GATEWAY_PORT: "3080"
+      EXP_API_UPSTREAM: api:8080
+      EXP_UI_UPSTREAM: ui:3000
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+    ports:
+      - "3080:3080"
+    depends_on:
+      - api
+      - ui
+
+volumes:
+  expool-data:

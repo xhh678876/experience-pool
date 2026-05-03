@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Helper that pulls a trajectory out of `claude --output-format json` envelopes
-# and uploads it. Useful as a `Stop` hook in ~/.claude/settings.json:
+# Helper that pulls a trajectory out of Claude transcript JSONL and uploads it
+# through the MVP Lite endpoint. Useful as a Stop hook in ~/.claude/settings.json:
 #
 #   {"hooks": {"Stop": [{"command": "experience-pool/scripts/auto-upload.sh"}]}}
 #
@@ -39,9 +39,9 @@ for line in pathlib.Path(src).read_text().splitlines():
 pathlib.Path(dst).write_text(json.dumps({"trajectory": turns}))
 PY
 
-exp push --task "$TASK" --model "$MODEL" --file "$TRAJ" \
+exp push-lite --task "$TASK" --model "$MODEL" --file "$TRAJ" \
     --sensitivity "$SENSITIVITY" --acl "$ACL" || {
-    echo "exp push failed; trajectory left at $TRAJ" >&2
+    echo "exp push-lite failed; trajectory left at $TRAJ" >&2
     exit 0
 }
 rm -f "$TRAJ"

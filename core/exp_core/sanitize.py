@@ -22,7 +22,7 @@ from typing import Any
 
 import yaml
 
-from . import llm
+from . import llm, opf_filter
 
 DEFAULT_RULES_PATH = Path(__file__).parent / "sanitize_rules.yaml"
 
@@ -89,7 +89,10 @@ class SanitizationResult:
     layer2_findings: tuple[Layer2Finding, ...] = field(default_factory=tuple)
     layer3: Layer3Finding | None = None
     changed: bool = False
-    status: str = "done"  # 'done' | 'flagged' | 'human_review'
+    status: str = "done"  # 'done' | 'flagged' | 'human_review' | 'quarantined'
+    # Layer 1.5 (OPF) attribution. Empty dict if model unavailable.
+    opf_hits: dict[str, int] = field(default_factory=dict)
+    opf_used: bool = False
 
     def to_metadata(self) -> dict[str, Any]:
         """Serialize for storage in audit log / disk side-files."""
@@ -114,6 +117,10 @@ class SanitizationResult:
                 if self.layer3
                 else None
             ),
+            "opf": {
+                "used": self.opf_used,
+                "hits": dict(self.opf_hits),
+            },
             "changed": self.changed,
             "status": self.status,
         }
@@ -280,18 +287,22 @@ def _redact_employee_ids(
 
 
 # Rules whose category names should bump the result to high severity.
+# Kept in sync with the `severity: high` entries in sanitize_rules.yaml.
 _HIGH_SEVERITY_CATEGORIES = {
-    "credit_card",
-    "aws_access_key",
-    "ssh_rsa",
-    "pem_private_key",
-    "bearer_token",
-    "stripe_secret",
-    "github_token",
-    "openai_key",
-    "anthropic_key",
-    "generic_api_key",
-    "url_with_credentials",
+    # Keys / private data
+    "pem_private_key", "ssh_pubkey", "ssh_rsa", "gcp_sa_key",
+    "aws_access_key", "jwt", "bearer_token",
+    # Vendor secret tokens
+    "anthropic_key", "openai_key", "openai_proj_key", "xai_key", "groq_key",
+    "google_api_key", "hf_token", "mimo_token",
+    "stripe_secret", "stripe_publishable",
+    "github_token", "gitlab_token", "npm_token",
+    "vercel_token", "supabase_token", "cloudflare_token",
+    "sentry_dsn", "slack_token",
+    # Generic / structural
+    "generic_api_key", "url_with_credentials", "db_uri",
+    # PII high
+    "credit_card", "idcard_cn",
 }
 
 
@@ -335,29 +346,49 @@ def layer1_text(
     return out, counts, triggered_high
 
 
+# Keys that are pure identifiers / structural — sanitizing them would
+# corrupt routing (tool_use_id, role, etc.). Skip during recursion.
+_SKIP_KEYS_RECURSIVE = frozenset({
+    "id", "type", "role", "tool_use_id", "tool_call_id",
+    "name", "subtype", "model", "stop_reason", "stop_sequence",
+    "usage", "index",
+})
+
+
 def layer1_trajectory(
     trajectory: list[dict[str, Any]], rules: RuleSet
 ) -> tuple[list[dict[str, Any]], dict[str, int], bool]:
     """Apply Layer 1 rules to every string in every turn (immutable).
 
-    Walks all string-typed values inside each turn dict (one level deep) so
-    that custom keys beyond `content` also get scrubbed.
+    Recursively walks dicts and lists so that secrets nested inside
+    `tool_calls.arguments`, `tool_result.content`, Anthropic block lists,
+    etc. all get scrubbed. Skips structural identifier keys so message
+    routing stays intact.
     """
-    new_traj: list[dict[str, Any]] = []
     total_counts: dict[str, int] = {}
     triggered = False
-    for turn in trajectory:
-        new_turn: dict[str, Any] = {}
-        for k, v in turn.items():
-            if isinstance(v, str):
-                sanitized, counts, hi = layer1_text(v, rules)
-                new_turn[k] = sanitized
-                for cat, c in counts.items():
-                    total_counts[cat] = total_counts.get(cat, 0) + c
-                triggered = triggered or hi
-            else:
-                new_turn[k] = v
-        new_traj.append(new_turn)
+
+    def _walk(node: Any) -> Any:
+        nonlocal triggered
+        if isinstance(node, str):
+            sanitized, counts, hi = layer1_text(node, rules)
+            for cat, c in counts.items():
+                total_counts[cat] = total_counts.get(cat, 0) + c
+            triggered = triggered or hi
+            return sanitized
+        if isinstance(node, list):
+            return [_walk(x) for x in node]
+        if isinstance(node, dict):
+            out: dict[str, Any] = {}
+            for k, v in node.items():
+                if k in _SKIP_KEYS_RECURSIVE or not isinstance(v, (str, list, dict)):
+                    out[k] = v
+                else:
+                    out[k] = _walk(v)
+            return out
+        return node
+
+    new_traj = [_walk(turn) if isinstance(turn, dict) else turn for turn in trajectory]
     return new_traj, total_counts, triggered
 
 
@@ -492,25 +523,70 @@ def layer3_llm(trajectory: list[dict[str, Any]]) -> Layer3Finding:
 # ---------------------------------------------------------------------------
 
 
+def _layer1_5_opf(
+    trajectory: list[dict[str, Any]], counts: dict[str, int]
+) -> tuple[list[dict[str, Any]], dict[str, int], bool, bool]:
+    """Layer 1.5: OpenAI Privacy Filter pass.
+
+    Runs after Layer 1 regex on already-sanitized text — this means OPF
+    only sees what regex didn't catch, reducing false positives on tokens
+    that already became `<SECRET>` placeholders. Returns (new_trajectory,
+    opf_hits, opf_triggered_high, opf_used).
+    """
+    opf_hits: dict[str, int] = {}
+    new_traj: list[dict[str, Any]] = []
+    opf_used = False
+    triggered_high = False
+    for turn in trajectory:
+        cleaned_turn, hi = opf_filter.redact_node(turn, opf_hits)
+        new_traj.append(cleaned_turn)
+        triggered_high = triggered_high or hi
+    if opf_hits:
+        opf_used = True
+        # Roll OPF hits into the master redactions counter so audit logs
+        # see one unified per-category dict. Prefix with "opf_" so we can
+        # distinguish them from Layer 1 categories.
+        for label, n in opf_hits.items():
+            counts[f"opf_{label}"] = counts.get(f"opf_{label}", 0) + n
+    else:
+        # Even when there were zero hits, record whether the model ran so
+        # operators can verify OPF is actually live in production.
+        opf_used = opf_filter.status().get("loaded", False)
+    return new_traj, opf_hits, triggered_high, opf_used
+
+
 def sanitize_trajectory(
     trajectory: list[dict[str, Any]],
     *,
     sensitivity: str = "medium",
     rules: RuleSet | None = None,
+    use_opf: bool = True,
 ) -> SanitizationResult:
-    """Run the three-layer pipeline.
+    """Run the four-layer pipeline.
 
-    Layer 1 always runs. Layer 2 runs unless (sensitivity=='low' and
-    Layer 1 found nothing). Layer 3 runs when sensitivity=='high' OR
-    Layer 2 surfaced anything.
+    Layer 1   — always: deterministic regex (driven by sanitize_rules.yaml).
+    Layer 1.5 — when `use_opf=True` AND opf_filter is loadable: OpenAI
+                Privacy Filter for context-aware PII spans (8 categories).
+                The 'secret' category escalates to human review.
+    Layer 2   — unless (sensitivity=='low' AND nothing fired): heuristic
+                name/address/DOB/credit-card-shape detection (flag-only).
+    Layer 3   — when sensitivity=='high' OR Layer 2 surfaced anything:
+                LLM business-sensitivity check.
     """
     rules = rules or load_rules()
 
     sanitized, counts, layer1_high = layer1_trajectory(trajectory, rules)
     layer1_changed = bool(counts)
 
+    # Layer 1.5 — OPF context-aware PII pass.
+    opf_hits: dict[str, int] = {}
+    opf_high = False
+    opf_used = False
+    if use_opf and opf_filter.is_enabled():
+        sanitized, opf_hits, opf_high, opf_used = _layer1_5_opf(sanitized, counts)
+
     # Layer 2 gate.
-    skip_layer2 = sensitivity == "low" and not layer1_changed
+    skip_layer2 = sensitivity == "low" and not layer1_changed and not opf_hits
     findings: tuple[Layer2Finding, ...] = ()
     if not skip_layer2:
         findings = tuple(layer2_trajectory(sanitized))
@@ -521,12 +597,14 @@ def sanitize_trajectory(
         layer3 = layer3_llm(sanitized)
 
     triggered_human_review = (
-        layer1_high or (layer3 is not None and layer3.is_sensitive)
+        layer1_high
+        or opf_high
+        or (layer3 is not None and layer3.is_sensitive)
     )
 
     if triggered_human_review:
         status = "human_review"
-    elif layer1_changed or findings:
+    elif layer1_changed or findings or opf_hits:
         status = "flagged"
     else:
         status = "done"
@@ -537,6 +615,8 @@ def sanitize_trajectory(
         triggered_human_review=triggered_human_review,
         layer2_findings=findings,
         layer3=layer3,
-        changed=layer1_changed,
+        changed=layer1_changed or bool(opf_hits),
         status=status,
+        opf_hits=opf_hits,
+        opf_used=opf_used,
     )

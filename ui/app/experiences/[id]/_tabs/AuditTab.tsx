@@ -6,14 +6,14 @@ export function AuditTab({ audits }: { audits: AuditRow[] }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Audit log</CardTitle>
+        <CardTitle>审计日志</CardTitle>
         <p className="text-xs text-muted-foreground mt-1">
-          Most recent first. Includes pipeline stages, reviewer actions, and queued requests.
+          最新在前，包含管线阶段、审阅动作和排队请求。
         </p>
       </CardHeader>
       <CardContent>
         {audits.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No audit rows for this target.</p>
+          <p className="text-sm text-muted-foreground">当前对象暂无审计记录。</p>
         ) : (
           <ul className="space-y-4">
             {audits.map((a) => (
