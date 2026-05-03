@@ -44,8 +44,9 @@ export async function getOwnerQuota(viewerName: string): Promise<OwnerQuota> {
       .prepare("SELECT COALESCE(owner, name) AS owner FROM agents WHERE name = ?")
       .get(viewerName) as { owner: string } | undefined)?.owner ?? viewerName;
 
-  // Lazy-create quota row.
-  db.prepare("INSERT OR IGNORE INTO owner_quotas (owner) VALUES (?)").run(owner);
+  // READ-ONLY: do NOT INSERT here — it caused SQLITE_BUSY contention with
+  // the api process under concurrent quota bumps. The api side creates
+  // the row on first publish; if it's missing on read, treat as 0.
   const row = db
     .prepare(
       "SELECT publish_count FROM owner_quotas WHERE owner = ?"
