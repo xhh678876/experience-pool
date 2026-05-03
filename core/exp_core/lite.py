@@ -485,46 +485,111 @@ def push_lite(
 # Pure cosine search with ACL
 # ---------------------------------------------------------------------------
 
-def search_lite(
+def search_lite_with_meta(
     conn: sqlite3.Connection,
     *,
     viewer_name: str,
     query: str,
     top_k: int = 5,
     task_type: str | None = None,
-) -> list[dict[str, Any]]:
+    scope: str = "auto",
+) -> dict[str, Any]:
+    """Two-stage search returning structured metadata.
+
+    Stage 1: viewer's own personal pool (acl='private' OR
+             agent.owner == viewer.owner). Always returned.
+    Stage 2: community pool (acl='public', publish_status='published').
+             Only included when the viewer's owner has publish_count
+             >= COMMUNITY_THRESHOLD.
+
+    `scope` controls which stages run:
+        'auto'      — stage 1 + stage 2 (gated by quota)
+        'personal'  — stage 1 only (force private pool)
+        'community' — stage 2 only (force community pool; still gated)
+
+    Returns {results, personal, community, quota, scope, community_locked_hint}.
+    See search_lite() for the legacy list-only shape used by older callers.
+    """
+    from . import community as community_mod
+
     cur = conn.execute(
-        "SELECT agent_id, team FROM agents WHERE name = ?", (viewer_name,)
+        "SELECT agent_id, team, owner FROM agents WHERE name = ?", (viewer_name,)
     )
     me = cur.fetchone()
     if me is None:
         raise ValueError(f"unknown agent: {viewer_name}")
     viewer_id, viewer_team = me["agent_id"], me["team"]
+    viewer_owner = me["owner"] or viewer_name
+
+    # Find every agent_id sharing this owner (multi-agent personal pool).
+    cur = conn.execute(
+        "SELECT agent_id FROM agents WHERE owner = ? OR (owner IS NULL AND name = ?)",
+        (viewer_owner, viewer_owner),
+    )
+    owner_agent_ids = {r["agent_id"] for r in cur.fetchall()}
 
     qvec = embed(query)
+
+    # Pull the candidate set once. Filter in Python so we can apply both
+    # ACL + quota + owner-pool semantics in one place. Revoked rows are
+    # excluded by review_status='revoked' which isn't in the allowlist.
     cur = conn.execute(
         """
         SELECT v.experience_id, v.vector, e.task_type, e.review_status,
                e.query, e.intent_text, e.script_steps, e.outcome,
-               e.acl, e.agent_id, e.created_at, e.ingest_path
+               e.acl, e.agent_id, e.created_at, e.ingest_path,
+               COALESCE(e.publish_status, 'private') AS publish_status,
+               e.published_at
         FROM vectors v JOIN experiences e USING(experience_id)
         WHERE v.kind = 'intent'
           AND e.review_status IN ('approved', 'auto_approved', 'edited')
           AND e.extraction_status = 'done'
+          AND COALESCE(e.revoked, 0) = 0
         """
     )
-    scored: list[tuple[float, sqlite3.Row]] = []
+
+    quota = community_mod.get_quota(conn, viewer_owner)
+    community_unlocked = quota.community_unlocked
+
+    want_personal = scope in ("auto", "personal")
+    want_community = scope in ("auto", "community")
+
+    personal: list[tuple[float, sqlite3.Row]] = []
+    community: list[tuple[float, sqlite3.Row]] = []
+
     for row in cur.fetchall():
         if task_type and row["task_type"] != task_type:
             continue
-        if not can_read(viewer_id, viewer_team, row["agent_id"], row["acl"]):
+
+        is_owner_row = row["agent_id"] in owner_agent_ids
+        is_published = row["publish_status"] == "published" and row["acl"] == "public"
+
+        # Stage 1 — personal pool (any of the owner's agents)
+        if is_owner_row and want_personal:
+            sim = cosine(qvec, from_blob(row["vector"]))
+            personal.append((sim, row))
             continue
-        sim = cosine(qvec, from_blob(row["vector"]))
-        scored.append((sim, row))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    out = []
-    for sim, row in scored[:top_k]:
-        out.append({
+
+        # Stage 2 — community pool (only if unlocked)
+        if is_published and want_community and community_unlocked:
+            # Don't show your own published rows again in the community
+            # bucket — they were already in personal.
+            if is_owner_row:
+                continue
+            sim = cosine(qvec, from_blob(row["vector"]))
+            community.append((sim, row))
+            continue
+
+        # Otherwise: legacy ACL path (team:X, etc.) — preserve previous behavior.
+        if want_personal and can_read(viewer_id, viewer_team, row["agent_id"], row["acl"]):
+            sim = cosine(qvec, from_blob(row["vector"]))
+            personal.append((sim, row))
+
+    personal.sort(key=lambda x: x[0], reverse=True)
+    community.sort(key=lambda x: x[0], reverse=True)
+
+    def _row_to_dict(sim: float, row: sqlite3.Row, source: str) -> dict[str, Any]:
+        return {
             "experience_id": row["experience_id"],
             "query": row["query"],
             "intent": row["intent_text"],
@@ -533,16 +598,68 @@ def search_lite(
             "task_type": row["task_type"],
             "acl": row["acl"],
             "ingest_path": row["ingest_path"],
+            "publish_status": row["publish_status"],
             "similarity": sim,
-        })
-    # Bump visit_count (kept for future Q work; harmless in v0).
-    if scored and top_k > 0:
-        ids = [r["experience_id"] for _, r in scored[:top_k]]
-        if ids:
-            conn.execute(
-                "UPDATE experiences SET visit_count = visit_count + 1 "
-                f"WHERE experience_id IN ({','.join('?' * len(ids))})",
-                ids,
-            )
-            conn.commit()
-    return out
+            "source": source,
+        }
+
+    personal_results = [_row_to_dict(s, r, "personal") for s, r in personal[:top_k]]
+    community_results = [_row_to_dict(s, r, "community") for s, r in community[:top_k]]
+
+    # Combine for the legacy `results` field (UI compatibility): personal
+    # first, then community filling up to top_k.
+    combined: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for r in personal_results + community_results:
+        if r["experience_id"] in seen_ids:
+            continue
+        combined.append(r)
+        seen_ids.add(r["experience_id"])
+        if len(combined) >= top_k:
+            break
+
+    # Bump visit_count for whatever we returned.
+    ids = [r["experience_id"] for r in combined]
+    if ids:
+        conn.execute(
+            "UPDATE experiences SET visit_count = visit_count + 1 "
+            f"WHERE experience_id IN ({','.join('?' * len(ids))})",
+            ids,
+        )
+        conn.commit()
+
+    return {
+        "results": combined,
+        "personal": personal_results,
+        "community": community_results,
+        "quota": quota.to_dict(),
+        "scope": scope,
+        "community_locked_hint": (
+            None if community_unlocked
+            else f"community pool locked: {quota.hint}"
+        ),
+    }
+
+
+def search_lite(
+    conn: sqlite3.Connection,
+    *,
+    viewer_name: str,
+    query: str,
+    top_k: int = 5,
+    task_type: str | None = None,
+    scope: str = "auto",
+) -> list[dict[str, Any]]:
+    """Backwards-compatible wrapper that returns just the results list.
+
+    For new code use search_lite_with_meta() to also get the personal /
+    community / quota breakdown the UI shows.
+    """
+    return search_lite_with_meta(
+        conn,
+        viewer_name=viewer_name,
+        query=query,
+        top_k=top_k,
+        task_type=task_type,
+        scope=scope,
+    )["results"]

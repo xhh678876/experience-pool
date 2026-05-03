@@ -40,7 +40,13 @@ def app_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def register(client: TestClient, name: str, team: str) -> Credential:
     res = client.post("/v1/agents/register", json={"name": name, "team": team})
     assert res.status_code == 200, res.text
-    return Credential(**res.json())
+    payload = res.json()
+    return Credential(
+        agent_id=payload["agent_id"],
+        agent_name=payload["agent_name"],
+        team=payload["team"],
+        secret=payload["secret"],
+    )
 
 
 def signed_json(
@@ -318,3 +324,129 @@ def test_lite_revoke_unknown_eid_returns_404(app_client: TestClient):
         {"experience_id": "not-a-real-id", "reason": "test"},
     )
     assert rev.status_code == 404
+
+
+def test_publish_requires_strict_clean_content(app_client: TestClient):
+    """A trace containing a file:// URI must be blocked with 422 + hits."""
+    alice = register(app_client, "alice", "platform")
+    push = signed_json(
+        app_client,
+        alice,
+        "POST",
+        "/v1/lite/push",
+        {
+            **lite_card("review screenshot", acl="private"),
+            "trajectory": [
+                {"role": "user", "content": "see file:///Users/alice/Library/x/y.png"},
+            ],
+        },
+    )
+    assert push.status_code == 202, push.text
+    eid = push.json()["experience_id"]
+
+    pub = signed_json(
+        app_client,
+        alice,
+        "POST",
+        "/v1/lite/publish",
+        {"experience_id": eid},
+    )
+    assert pub.status_code == 422, pub.text
+    body = pub.json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    rules_hit = {h["rule"] for h in body["blocking_hits"]}
+    assert "file_uri" in rules_hit
+
+
+def test_publish_clean_content_succeeds_and_unpublish_round_trips(app_client: TestClient):
+    """A clean trace publishes, bumps publish_count, then unpublishes."""
+    alice = register(app_client, "alice", "platform")
+    push = signed_json(
+        app_client,
+        alice,
+        "POST",
+        "/v1/lite/push",
+        {
+            **lite_card("clean playbook for csv aggregation", acl="private"),
+            "trajectory": [
+                {"role": "user", "content": "I want to aggregate the rows by region"},
+                {"role": "assistant", "content": "use pandas groupby"},
+            ],
+        },
+    )
+    assert push.status_code == 202, push.text
+    eid = push.json()["experience_id"]
+
+    # quota before
+    q1 = signed_json(app_client, alice, "GET", "/v1/me/quota", {})
+    assert q1.status_code == 200
+    before = q1.json()["publish_count"]
+
+    pub = signed_json(
+        app_client,
+        alice,
+        "POST",
+        "/v1/lite/publish",
+        {"experience_id": eid},
+    )
+    assert pub.status_code == 200, pub.text
+    body = pub.json()
+    assert body["ok"] is True
+    assert body["status"] == "published"
+    assert body["quota"]["publish_count"] == before + 1
+
+    # Idempotent re-publish
+    again = signed_json(
+        app_client,
+        alice,
+        "POST",
+        "/v1/lite/publish",
+        {"experience_id": eid},
+    )
+    assert again.json()["status"] == "already_public"
+    # Count must NOT bump on repeat.
+    assert again.json()["quota"]["publish_count"] == before + 1
+
+    # Unpublish — count stays.
+    un = signed_json(
+        app_client,
+        alice,
+        "POST",
+        "/v1/lite/unpublish",
+        {"experience_id": eid},
+    )
+    assert un.json()["status"] == "unpublished"
+    assert un.json()["quota"]["publish_count"] == before + 1
+
+
+def test_publish_other_owner_forbidden(app_client: TestClient):
+    """Bob can't publish Alice's experience even though both have credentials."""
+    alice = register(app_client, "alice", "platform")
+    bob = register(app_client, "bob", "platform")
+    push = signed_json(
+        app_client,
+        alice,
+        "POST",
+        "/v1/lite/push",
+        lite_card("alice's clean idea", acl="private"),
+    )
+    eid = push.json()["experience_id"]
+    bad = signed_json(
+        app_client,
+        bob,
+        "POST",
+        "/v1/lite/publish",
+        {"experience_id": eid},
+    )
+    assert bad.status_code == 403
+
+
+def test_quota_endpoint_default_locked(app_client: TestClient):
+    alice = register(app_client, "alice", "platform")
+    res = signed_json(app_client, alice, "GET", "/v1/me/quota", {})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["publish_count"] == 0
+    assert body["threshold"] == 3
+    assert body["community_unlocked"] is False

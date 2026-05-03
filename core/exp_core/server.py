@@ -90,6 +90,12 @@ def _rate_group(request: Request) -> tuple[str, int] | None:
         return ("rewards", _env_int("EXP_RATE_REWARDS_PER_MIN", 60))
     if path == "/v1/lite/revoke" and method == "POST":
         return ("revoke", _env_int("EXP_RATE_REVOKE_PER_MIN", 30))
+    if path == "/v1/lite/publish" and method == "POST":
+        return ("publish", _env_int("EXP_RATE_PUBLISH_PER_MIN", 30))
+    if path == "/v1/lite/unpublish" and method == "POST":
+        return ("publish", _env_int("EXP_RATE_PUBLISH_PER_MIN", 30))
+    if path == "/v1/me/quota" and method == "GET":
+        return ("quota", _env_int("EXP_RATE_QUOTA_PER_MIN", 60))
     return None
 
 
@@ -207,6 +213,10 @@ async def hmac_auth(request: Request, call_next):
 class RegisterReq(BaseModel):
     name: str
     team: str
+    # Stable owner handle that groups multiple agents into one personal
+    # pool. If omitted, the server back-fills owner = name (1:1 isolation,
+    # same as before). Recommended: a GitHub handle or email-shaped string.
+    owner: str | None = None
 
 
 class PushReq(BaseModel):
@@ -306,8 +316,18 @@ async def healthz():
 async def register(req: RegisterReq) -> dict[str, Any]:
     pool = _pool()
     aid = pool.register_agent(req.name, req.team)
+    # Set owner — explicit if provided, else default to name. The DB
+    # column was added by quality.ensure_quality_columns; updating it
+    # here is idempotent for re-registrations.
+    owner = (req.owner or req.name).strip()
+    pool.conn.execute(
+        "UPDATE agents SET owner = ? WHERE name = ?", (owner, req.name)
+    )
+    pool.conn.commit()
     cred = issue_credential(aid, req.name, req.team)
-    return cred.to_dict()
+    out = cred.to_dict()
+    out["owner"] = owner
+    return out
 
 
 @app.post("/v1/experiences", status_code=202)
@@ -446,6 +466,10 @@ class LiteSearchReq(BaseModel):
     q: str
     top_k: int = 5
     task_type: str | None = None
+    # 'auto' = personal pool always + community pool if quota unlocked.
+    # 'personal' = force personal-only. 'community' = force public-only
+    # (still gated by quota).
+    scope: str = "auto"
 
 
 @app.post("/v1/lite/push", status_code=202)
@@ -492,10 +516,11 @@ def _safe_auto_label(db_path: str, eid: str) -> None:
 async def lite_search(req: LiteSearchReq, request: Request) -> dict[str, Any]:
     pool = _pool()
     actor = request.state.agent_name
-    return {"results": lite_mod.search_lite(
+    scope = getattr(req, "scope", "auto") or "auto"
+    return lite_mod.search_lite_with_meta(
         pool.conn, viewer_name=actor, query=req.q,
-        top_k=req.top_k, task_type=req.task_type,
-    )}
+        top_k=req.top_k, task_type=req.task_type, scope=scope,
+    )
 
 
 # ----- revoke (right-to-be-forgotten) ----------------------------------------
@@ -599,6 +624,70 @@ async def lite_revoke(req: LiteRevokeReq, request: Request) -> dict[str, Any]:
         "deleted_files": deleted_files,
         "revoked_at": now_iso,
     }
+
+
+# ----- publish / unpublish (community pool opt-in) ---------------------------
+
+
+class LitePublishReq(BaseModel):
+    experience_id: str
+
+
+@app.post("/v1/lite/publish")
+async def lite_publish(req: LitePublishReq, request: Request) -> JSONResponse:
+    """Publish a private experience to the community pool.
+
+    Runs strict_public_check (file://, local resources, localhost URLs,
+    UUIDs, etc.). On pass: sets acl='public', bumps owner.publish_count.
+    On fail: HTTP 422 with the offending hits + locations so the user can
+    clean and retry.
+    """
+    from . import community
+    pool = _pool()
+    actor = request.state.agent_name
+    result = community.publish_experience(
+        pool.conn, experience_id=req.experience_id, actor_name=actor,
+    )
+    if result.status == "blocked":
+        # Surface the strict-mode hits to the user.
+        return JSONResponse(result.to_dict(), status_code=422)
+    if result.status == "not_found":
+        return JSONResponse(result.to_dict(), status_code=404)
+    if result.status == "forbidden":
+        return JSONResponse(result.to_dict(), status_code=403)
+    return JSONResponse(result.to_dict(), status_code=200)
+
+
+@app.post("/v1/lite/unpublish")
+async def lite_unpublish(req: LitePublishReq, request: Request) -> JSONResponse:
+    """Drop a published experience back to private. publish_count is
+    NOT decremented (contribution credit stays once earned)."""
+    from . import community
+    pool = _pool()
+    actor = request.state.agent_name
+    result = community.unpublish_experience(
+        pool.conn, experience_id=req.experience_id, actor_name=actor,
+    )
+    if result.status == "not_found":
+        return JSONResponse(result.to_dict(), status_code=404)
+    if result.status == "forbidden":
+        return JSONResponse(result.to_dict(), status_code=403)
+    return JSONResponse(result.to_dict(), status_code=200)
+
+
+@app.get("/v1/me/quota")
+async def me_quota(request: Request) -> dict[str, Any]:
+    """Returns the current viewer's publish_count, threshold, and unlock
+    state. Used by the UI to show progress + decide whether to surface
+    the community pool."""
+    from . import community
+    pool = _pool()
+    actor = request.state.agent_name
+    owner = community.get_owner(pool.conn, actor)
+    if owner is None:
+        raise HTTPException(status_code=404, detail=f"unknown agent: {actor}")
+    quota = community.get_quota(pool.conn, owner)
+    return quota.to_dict()
 
 
 # ----- per-turn rewards (synergy schema) -----------------------------------

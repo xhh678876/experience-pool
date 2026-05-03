@@ -6,6 +6,7 @@ import {
   Boxes,
   Database,
   Gauge,
+  Globe2,
   Layers3,
   LayoutDashboard,
   Search,
@@ -357,6 +358,14 @@ export default async function RootLayout({
               >
                 <ShieldCheck className="h-4 w-4" />
                 我的
+              </Link>
+              <Link
+                href="/community"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                title="社区池（需先发布 3 条解锁）"
+              >
+                <Globe2 className="h-4 w-4" />
+                社区
               </Link>
               <Link
                 href="/consent"

@@ -41,6 +41,18 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("experiences", "revoked",            "INTEGER NOT NULL DEFAULT 0"),
     ("experiences", "revoked_at",         "TEXT"),
     ("experiences", "revoke_reason",      "TEXT"),
+    # Personal-pool / community-pool two-tier ACL.
+    # publish_status:
+    #   'private'  — default; only the owner's agents can read
+    #   'pending'  — strict-sanitize in flight (rare; transient)
+    #   'published'— acl is also bumped to 'public'; visible in community pool
+    #   'rejected' — strict-sanitize blocked publication; reason in strict_redactions
+    ("experiences", "publish_status",     "TEXT NOT NULL DEFAULT 'private'"),
+    ("experiences", "published_at",       "TEXT"),
+    ("experiences", "strict_redactions",  "TEXT"),  # JSON of category→count or hit details
+    # Owner = stable handle that groups multiple agents into one personal
+    # pool. Existing rows back-fill owner = agents.name (1:1 isolation).
+    ("agents",      "owner",              "TEXT"),
 ]
 
 
@@ -62,6 +74,32 @@ def ensure_quality_columns(conn: sqlite3.Connection) -> None:
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_exp_fp ON experiences(content_fingerprint)"
     )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exp_publish ON experiences(publish_status)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner)"
+    )
+
+    # Owner quotas table — one row per owner, tracks publish_count etc.
+    # Created here (not in schema.py) so old DBs migrate forward lazily.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS owner_quotas (
+            owner          TEXT PRIMARY KEY,
+            publish_count  INTEGER NOT NULL DEFAULT 0,
+            unpublished_count INTEGER NOT NULL DEFAULT 0,
+            last_publish_at TEXT,
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+    # Back-fill: any agent without an owner inherits its name as a default
+    # owner string, preserving existing isolation. New registrations can
+    # set a real owner explicitly.
+    cur.execute("UPDATE agents SET owner = name WHERE owner IS NULL OR owner = ''")
     conn.commit()
 
 

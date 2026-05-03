@@ -22,6 +22,46 @@ export interface MyExperienceRow {
   redactions_summary: string | null;
   revoked: number | null;
   revoked_at: string | null;
+  publish_status: string | null;
+  published_at: string | null;
+  strict_redactions: string | null;
+}
+
+export interface OwnerQuota {
+  owner: string;
+  publish_count: number;
+  threshold: number;
+  community_unlocked: boolean;
+  hint: string;
+}
+
+const COMMUNITY_THRESHOLD = 3;
+
+export async function getOwnerQuota(viewerName: string): Promise<OwnerQuota> {
+  const db = getDb();
+  const owner =
+    (db
+      .prepare("SELECT COALESCE(owner, name) AS owner FROM agents WHERE name = ?")
+      .get(viewerName) as { owner: string } | undefined)?.owner ?? viewerName;
+
+  // Lazy-create quota row.
+  db.prepare("INSERT OR IGNORE INTO owner_quotas (owner) VALUES (?)").run(owner);
+  const row = db
+    .prepare(
+      "SELECT publish_count FROM owner_quotas WHERE owner = ?"
+    )
+    .get(owner) as { publish_count: number } | undefined;
+  const publish_count = row?.publish_count ?? 0;
+  const unlocked = publish_count >= COMMUNITY_THRESHOLD;
+  return {
+    owner,
+    publish_count,
+    threshold: COMMUNITY_THRESHOLD,
+    community_unlocked: unlocked,
+    hint: unlocked
+      ? "社区池已解锁"
+      : `再发布 ${COMMUNITY_THRESHOLD - publish_count} 条经验解锁社区池`,
+  };
 }
 
 export interface RevokeResult {
@@ -44,6 +84,13 @@ export async function listMyExperiences(
   const includeRevoked = options.includeRevoked ?? false;
   const limit = Math.max(1, Math.min(options.limit ?? 200, 1000));
 
+  // Multi-agent personal pool: list every experience whose agent.owner
+  // matches the viewer's owner.
+  const ownerRow = db
+    .prepare("SELECT COALESCE(owner, name) AS owner FROM agents WHERE name = ?")
+    .get(viewerName) as { owner: string } | undefined;
+  const owner = ownerRow?.owner ?? viewerName;
+
   const rows = db
     .prepare(
       `
@@ -64,6 +111,9 @@ export async function listMyExperiences(
         e.created_at,
         COALESCE(e.revoked, 0) AS revoked,
         e.revoked_at,
+        COALESCE(e.publish_status, 'private') AS publish_status,
+        e.published_at,
+        e.strict_redactions,
         (
           SELECT json_extract(payload, '$.redactions')
           FROM audit_log
@@ -72,13 +122,13 @@ export async function listMyExperiences(
         ) AS redactions_summary
       FROM experiences e
       JOIN agents a USING(agent_id)
-      WHERE a.name = ?
+      WHERE (a.owner = ? OR (a.owner IS NULL AND a.name = ?))
         ${includeRevoked ? "" : "AND COALESCE(e.revoked, 0) = 0"}
       ORDER BY e.created_at DESC
       LIMIT ?
       `
     )
-    .all(viewerName, limit) as MyExperienceRow[];
+    .all(owner, owner, limit) as MyExperienceRow[];
   return rows;
 }
 

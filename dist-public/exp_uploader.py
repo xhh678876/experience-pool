@@ -1744,6 +1744,44 @@ def cmd_consent_pending(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_quota(args: argparse.Namespace) -> int:
+    """GET /v1/me/quota — show this agent's publish_count + community
+    unlock state. Useful for users + scripts to check progress."""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found. run `exp_uploader register` first.")
+    res = http_request(args.base, "GET", "/v1/me/quota", cred=cred)
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """POST /v1/lite/publish — publish an experience to the community pool.
+    Strict sanitize (file://, local resources, localhost, UUIDs) runs first;
+    on block the response includes the offending hits + locations."""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found. run `exp_uploader register` first.")
+    res = http_request(
+        args.base, "POST", "/v1/lite/publish",
+        body={"experience_id": args.eid}, cred=cred,
+    )
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+    return 0 if res.get("ok") else 1
+
+
+def cmd_unpublish(args: argparse.Namespace) -> int:
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found. run `exp_uploader register` first.")
+    res = http_request(
+        args.base, "POST", "/v1/lite/unpublish",
+        body={"experience_id": args.eid}, cred=cred,
+    )
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+    return 0 if res.get("ok") else 1
+
+
 def cmd_consent_revoke(args: argparse.Namespace) -> int:
     """Ask the server to revoke a previously uploaded experience.
 
@@ -1761,7 +1799,9 @@ def cmd_consent_revoke(args: argparse.Namespace) -> int:
 
 
 def cmd_register(args: argparse.Namespace) -> int:
-    body = {"name": args.name, "team": args.team}
+    body: dict[str, Any] = {"name": args.name, "team": args.team}
+    if args.owner:
+        body["owner"] = args.owner
     res = http_request(args.base, "POST", "/v1/agents/register", body)
     save_path = save_credential(res)
     res["credentials_path"] = str(save_path)
@@ -2240,6 +2280,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("register", help="register agent and save HMAC credential")
     sp.add_argument("--name", required=True)
     sp.add_argument("--team", required=True)
+    sp.add_argument("--owner", default="",
+                    help="stable handle (e.g. github username, email) that "
+                         "groups multiple agents into one personal pool. "
+                         "Defaults to the agent name on first register.")
     sp.set_defaults(func=cmd_register)
 
     sp = sub.add_parser("whoami")
@@ -2383,6 +2427,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--eid", required=True, help="experience_id to revoke")
     sp.add_argument("--reason", default="user_request")
     sp.set_defaults(func=cmd_consent_revoke)
+
+    # ------------------------------------------------------------------
+    # Personal vs. community pool — publish / unpublish / quota
+    # ------------------------------------------------------------------
+    sp = sub.add_parser("quota",
+                        help="show your community-pool publish_count and unlock state")
+    sp.set_defaults(func=cmd_quota)
+
+    sp = sub.add_parser("publish",
+                        help="publish a private experience to the community pool "
+                             "(runs strict sanitize first)")
+    sp.add_argument("--eid", required=True, help="experience_id to publish")
+    sp.set_defaults(func=cmd_publish)
+
+    sp = sub.add_parser("unpublish",
+                        help="drop a published experience back to private "
+                             "(publish_count is NOT decremented)")
+    sp.add_argument("--eid", required=True, help="experience_id to unpublish")
+    sp.set_defaults(func=cmd_unpublish)
 
     return p
 
