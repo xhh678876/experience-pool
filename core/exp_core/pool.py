@@ -80,6 +80,12 @@ class ExperiencePool:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self._apply_lite_migrations()
+        # Email-based user accounts (sit on top of agents).
+        try:
+            from . import users as _users
+            _users.init_schema(self.conn)
+        except Exception:
+            pass
         # Quality / fingerprint / metrics columns (Ultron-borrowed).
         try:
             from . import quality as _q

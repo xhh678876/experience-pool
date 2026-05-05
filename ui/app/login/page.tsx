@@ -1,50 +1,41 @@
 import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import Link from "@/components/ui/link";
+import { withBase } from "@/components/ui/link";
+import { apiMe } from "@/lib/users-api";
+import LoginForm from "./LoginForm";
 
-async function setReviewer(formData: FormData): Promise<void> {
-  "use server";
-  const name = (formData.get("name") as string | null)?.trim() ?? "";
-  const c = await cookies();
-  if (name.length === 0) {
-    c.delete("X-Reviewer-Name");
-  } else {
-    c.set("X-Reviewer-Name", name, {
-      httpOnly: false,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
-  }
-  redirect("/");
+export const dynamic = "force-dynamic";
+
+interface PageProps {
+  searchParams: Promise<{ next?: string }>;
 }
 
-export default async function LoginPage() {
-  const c = await cookies();
-  const current = c.get("X-Reviewer-Name")?.value ?? "";
+export default async function LoginPage({ searchParams }: PageProps) {
+  const sp = await searchParams;
+  const nextPath = sp.next && sp.next.startsWith("/") ? sp.next : "/";
+  // Already logged in? bounce to wherever they wanted to go.
+  const me = await apiMe();
+  if (me) redirect(withBase(nextPath));
+
   return (
     <div className="max-w-md mx-auto">
       <Card>
         <CardHeader>
-          <CardTitle>切换审阅身份</CardTitle>
+          <CardTitle>登录</CardTitle>
           <CardDescription>
-            这里不做密码校验，只把审阅人名称写入 cookie，并记录到后续操作审计里。留空可清除。
+            用注册时的 <code className="font-mono">@sii.edu.cn</code> 邮箱 + 密码登录。
+            登录后主页会显示绑定 agent 的 curl 脚本。
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form action={setReviewer} className="space-y-4">
-            <Input
-              name="name"
-              defaultValue={current}
-              placeholder="例如：alice"
-              autoFocus
-            />
-            <div className="flex justify-end">
-              <Button type="submit">保存</Button>
-            </div>
-          </form>
+          <LoginForm nextPath={nextPath} />
+          <p className="mt-4 text-xs text-muted-foreground">
+            还没有账号?
+            <Link href="/register" className="ml-1 text-cyan-700 hover:underline">
+              去注册
+            </Link>
+          </p>
         </CardContent>
       </Card>
     </div>

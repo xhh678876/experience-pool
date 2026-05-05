@@ -1,0 +1,32 @@
+[Unit]
+Description=experience-pool OPF redaction service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+# Edit these paths for the target box.
+WorkingDirectory=/opt/experience-pool
+Environment=OPF_BIND_HOST=0.0.0.0
+Environment=OPF_BIND_PORT=8085
+Environment=OPF_DEVICE=cuda
+Environment=OPF_CHECKPOINT=/opt/experience-pool/opf-weights
+Environment=OPF_OPERATING_POINT=balanced
+# Set OPF_AUTH_TOKEN here if you need auth.
+# Environment=OPF_AUTH_TOKEN=replace-with-shared-secret
+# Pin a specific GPU if the host has more than one:
+# Environment=CUDA_VISIBLE_DEVICES=1
+
+ExecStart=/opt/experience-pool/scripts/run_opf_service.sh
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+# Soft limit on memory so a runaway model load doesn't OOM the box.
+# Adjust for your GPU host.
+# MemoryMax=12G
+
+[Install]
+WantedBy=multi-user.target

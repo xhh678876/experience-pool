@@ -103,7 +103,7 @@ export function getMvpStats(): MvpStats {
   };
 }
 
-export function searchMvpExperiences({
+export async function searchMvpExperiences({
   viewerName,
   query,
   taskType,
@@ -113,7 +113,7 @@ export function searchMvpExperiences({
   query: string;
   taskType?: string;
   topK?: number;
-}): MvpExperienceHit[] {
+}): Promise<MvpExperienceHit[]> {
   const viewer = getViewer(viewerName);
   const params: unknown[] = [];
   let taskClause = "";
@@ -121,6 +121,11 @@ export function searchMvpExperiences({
     taskClause = "AND e.task_type = ?";
     params.push(taskType);
   }
+
+  // SQL-level ACL filter — public OR mine. Belt-and-suspenders with the
+  // canRead() filter below (which only saw `viewer` from a stale cookie).
+  const { aclVisibilityClause } = await import("./acl-filter");
+  const acl = await aclVisibilityClause();
 
   const rows = safeAll<DbRow>(
     `
@@ -133,11 +138,13 @@ export function searchMvpExperiences({
     JOIN agents a ON a.agent_id = e.agent_id
     WHERE v.kind = 'intent'
       AND COALESCE(e.ingest_path, 'full') = 'lite'
+      AND COALESCE(e.revoked, 0) = 0
       AND e.review_status IN ('approved', 'auto_approved', 'edited')
       AND e.extraction_status = 'done'
+      AND ${acl.sql}
       ${taskClause}
     `,
-    params,
+    [...acl.params, ...params],
   ).filter((row) => canRead(viewer, row));
 
   const trimmedQuery = query.trim();
@@ -156,7 +163,9 @@ export function searchMvpExperiences({
     .map(({ row, similarity }) => rowToHit(row, similarity));
 }
 
-export function listRecentMvpExperiences(limit = 8): MvpExperienceHit[] {
+export async function listRecentMvpExperiences(limit = 8): Promise<MvpExperienceHit[]> {
+  const { aclVisibilityClause } = await import("./acl-filter");
+  const acl = await aclVisibilityClause();
   return safeAll<DbRow>(
     `
     SELECT e.experience_id, e.agent_id, a.name AS agent_name, a.team,
@@ -166,10 +175,12 @@ export function listRecentMvpExperiences(limit = 8): MvpExperienceHit[] {
     FROM experiences e
     JOIN agents a ON a.agent_id = e.agent_id
     WHERE COALESCE(e.ingest_path, 'full') = 'lite'
+      AND COALESCE(e.revoked, 0) = 0
+      AND ${acl.sql}
     ORDER BY e.created_at DESC
     LIMIT ?
     `,
-    [limit],
+    [...acl.params, limit],
   ).map((row) => rowToHit(row, null));
 }
 

@@ -48,8 +48,8 @@ export default async function SearchPage({
   const q = (sp.q ?? "").trim();
 
   // Pull a wider set; we'll filter client-side by sensitivity / ACL.
-  const rawHits = q
-    ? searchMvpExperiences({
+  const rawHits: MvpExperienceHit[] = q
+    ? await searchMvpExperiences({
         viewerName: viewer,
         query: q,
         taskType: task,

@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { EdgeRow, ExperienceListItem } from "@/lib/types";
 import { shortId, statusColor } from "@/lib/utils";
+import { withBase } from "@/lib/base-path";
 
 type Node = ExperienceListItem;
 
@@ -261,7 +262,7 @@ function NodeBox({
   accent?: boolean;
 }) {
   return (
-    <a href={href}>
+    <a href={withBase(href)}>
       <rect
         x={x}
         y={y}

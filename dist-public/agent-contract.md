@@ -1,9 +1,3 @@
----
-name: experience-pool
-description: Search the team experience pool before solved-before tasks; auto-upload to user private repo + notify after each task boundary. Apply to any agent session involving debugging, coding, infra, learning.
-version: 3.0.0
----
-
 # experience-pool agent contract
 
 You have access to your team's shared **experience pool** through the

@@ -1428,6 +1428,45 @@ def _adapter_latest_path_or_id(src: str) -> str:
 # Lite-card builder (matches cli/src/lite.ts shape).
 # ---------------------------------------------------------------------------
 
+_TASK_SUMMARY_RE = re.compile(r"(?im)^\s*\[task-summary\]\s*[:：]\s*(.+?)\s*$")
+
+
+def _extract_task_summary_title(trajectory: list[dict[str, Any]]) -> str:
+    for t in reversed(trajectory):
+        content = str(t.get("content") or "")
+        matches = _TASK_SUMMARY_RE.findall(content)
+        if not matches:
+            continue
+        label = " ".join(matches[-1].strip().split())
+        label = label.strip('"\'`「」『』').strip()
+        if label.endswith(("。", ".", "!", "?", "！", "？", ":", "：")):
+            label = label[:-1].strip()
+        if label and not label.lower().startswith((
+            "waiting", "looking", "based on", "i ", "i'", "the ", "<",
+            "我需要", "我看到", "根据", "请确认",
+        )):
+            return label[:60] + ("…" if len(label) > 60 else "")
+    return ""
+
+
+def _derive_title_heuristic(query: str) -> str:
+    text = (query or "").strip()
+    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not line:
+        return "unspecified task"
+    head = line[:120]
+    cut_at = -1
+    for sep in ("。", "！", "？", ". ", "! ", "? ", "\n"):
+        idx = head.find(sep)
+        if idx > 0 and (cut_at < 0 or idx < cut_at):
+            cut_at = idx + len(sep)
+    title = head[:cut_at].strip() if cut_at > 0 else head.strip()
+    title = " ".join(title.split())
+    if len(title) > 70:
+        title = title[:69].rstrip() + "…"
+    return title or "unspecified task"
+
+
 def build_lite_card(
     session: Session,
     *,
@@ -1463,7 +1502,7 @@ def build_lite_card(
             steps.append(body[:280])
             outcome = body
 
-    intent = (query[:120] or "unspecified task").strip()
+    intent = _extract_task_summary_title(sanitized_traj) or _derive_title_heuristic(query)
     return {
         "card": {
             "query": query or "(no user turn)",
@@ -1817,6 +1856,86 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         return 1
     print(json.dumps({"agent_name": cred["agent_name"], "secret": "***"}, indent=2))
     return 0
+
+
+def cmd_bind(args: argparse.Namespace) -> int:
+    """Drop a portal-issued credential into place without re-running install.
+
+    Use case: user already has experience-pool installed, then registers (or
+    rotates) at the web portal and gets a bind script. They can either:
+      1. Run the curl one-liner (re-runs install.sh — heavier).
+      2. Run `exp bind --name X --secret Y --team Z` (this command).
+
+    Both end up at the same place: ~/.experience-pool/credentials/X.json
+    written with the supplied secret, and ~/.claude/settings.json env block
+    updated to lock the agent identity.
+    """
+    name = args.name.strip()
+    secret = args.secret.strip()
+    if not name or not secret:
+        print("name + secret are required", file=sys.stderr)
+        return 2
+
+    cred_dir = Path(os.environ.get("EXP_CRED_DIR",
+                                   str(Path.home() / ".experience-pool" / "credentials")))
+    cred_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(cred_dir, 0o700)
+    except OSError:
+        pass
+
+    import uuid as _uuid_mod
+    agent_id = args.agent_id or str(_uuid_mod.uuid4())
+    team = args.team or "default"
+    cred = {"agent_id": agent_id, "agent_name": name, "team": team, "secret": secret}
+    cred_path = cred_dir / f"{name}.json"
+    cred_path.write_text(json.dumps(cred, indent=2))
+    try:
+        os.chmod(cred_path, 0o600)
+    except OSError:
+        pass
+
+    # Patch ~/.claude/settings.json env to lock identity for future sessions.
+    patched_settings = False
+    if not args.skip_claude_settings:
+        settings_path = Path.home() / ".claude" / "settings.json"
+        try:
+            if settings_path.exists():
+                data = json.loads(settings_path.read_text())
+            else:
+                settings_path.parent.mkdir(parents=True, exist_ok=True)
+                data = {}
+            env = data.setdefault("env", {})
+            env["EXP_AGENT_NAME"] = name
+            settings_path.write_text(json.dumps(data, indent=2))
+            patched_settings = True
+        except Exception as exc:
+            print(f"(warning) couldn't patch {settings_path}: {exc}", file=sys.stderr)
+
+    # Smoke-test: hit /v1/users/me-style or /healthz with HMAC to confirm
+    # secret is correct. We use whoami-equivalent: just ensure server is
+    # reachable; any signed request is sufficient.
+    server_ok = False
+    if not args.no_verify:
+        os.environ["EXP_AGENT_NAME"] = name  # ensure load_credential() picks it up
+        try:
+            http_request(args.base, "GET", "/healthz", None)
+            server_ok = True
+        except Exception:
+            server_ok = False
+
+    out = {
+        "status": "bound",
+        "agent_name": name,
+        "agent_id": agent_id,
+        "team": team,
+        "credential_path": str(cred_path),
+        "claude_settings_patched": patched_settings,
+        "server_reachable": server_ok,
+        "base": args.base,
+    }
+    print(json.dumps(out, indent=2))
+    return 0 if server_ok or args.no_verify else 1
 
 
 def cmd_list_sessions(args: argparse.Namespace) -> int:
@@ -2288,6 +2407,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("whoami")
     sp.set_defaults(func=cmd_whoami)
+
+    sp = sub.add_parser("bind",
+                        help="install a portal-issued credential without re-running install.sh")
+    sp.add_argument("--name", required=True,
+                    help="agent_name issued by the portal (e.g. user-alice)")
+    sp.add_argument("--secret", required=True,
+                    help="HMAC secret issued by the portal")
+    sp.add_argument("--agent-id", default="",
+                    help="optional: agent_id from the portal (else random UUID)")
+    sp.add_argument("--team", default="default")
+    sp.add_argument("--skip-claude-settings", action="store_true",
+                    help="don't patch ~/.claude/settings.json env block")
+    sp.add_argument("--no-verify", action="store_true",
+                    help="skip the post-bind /healthz check")
+    sp.set_defaults(func=cmd_bind)
 
     sp = sub.add_parser("list-sessions", help="list recent local sessions for a source")
     sp.add_argument("--source", default="auto", choices=["auto"] + list(ADAPTERS))

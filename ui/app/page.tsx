@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CopyButton } from "@/components/ui/copy-button";
+import BindScriptPanel from "./BindScriptPanel";
 import {
   getMvpStats,
   listAgents,
@@ -31,7 +32,9 @@ import { formatDate, sensitivityColor, shortId } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
-const INSTALL_CMD = "curl -sSL https://expool.clawsii.com/install | bash";
+const INSTALL_CMD =
+  process.env.EXP_INSTALL_CMD ??
+  "curl -sSL http://10.244.66.195:8081/install | bash";
 
 const SAMPLE_QUERIES = [
   "Caddy ACME 证书签发",
@@ -57,11 +60,11 @@ export default async function MarketHome({
   const viewer = sp.agent ?? agents[0]?.name ?? "";
   const stats = getMvpStats();
   const dash = getDashboardStats();
-  const sessions = listRecentSessions(8);
-  const top = topAgentsByContribution(8);
+  const sessions = await listRecentSessions(8);
+  const top = await topAgentsByContribution(8);
 
   const hits = q
-    ? searchMvpExperiences({ viewerName: viewer, query: q, topK: 5 })
+    ? await searchMvpExperiences({ viewerName: viewer, query: q, topK: 5 })
     : ([] as MvpExperienceHit[]);
 
   return (
@@ -81,20 +84,7 @@ export default async function MarketHome({
             省下重复踩坑、还能拿到 5 维奖励标注做训练样本。
           </p>
 
-          <div className="mt-6 w-full">
-            <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              一行命令安装
-            </div>
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-center">
-              <code className="flex-1 truncate rounded-lg border border-border/60 bg-white/85 px-3 py-2.5 text-center font-mono text-[12px] text-foreground sm:text-sm">
-                {INSTALL_CMD}
-              </code>
-              <CopyButton text={INSTALL_CMD} label="复制" className="h-10 px-4" />
-            </div>
-            <p className="mt-2 text-[11px] text-muted-foreground/80">
-              装完即跑：Stop hook 秒传 Claude Code session，launchd / systemd timer 每 2 分钟同步 Hermes / Codex / agents-chat。
-            </p>
-          </div>
+          <BindScriptPanel installCmdFallback={INSTALL_CMD} />
 
           <form className="mt-6 flex w-full flex-col items-center gap-2 sm:flex-row sm:justify-center">
             <div className="w-full max-w-xl flex-1">

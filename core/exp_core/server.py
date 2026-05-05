@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from . import lite as lite_mod
 from . import skills as skills_mod
 from . import auto_label as auto_label_mod
+from . import title_refine as title_refine_mod
 from .acl_search import get_with_acl, search_with_acl
 from .identity import issue_credential, load_credential, verify_signature
 from .monitoring import dashboard_stats, reuse_leaderboard
@@ -58,7 +59,113 @@ app = FastAPI(title="Experience Pool", version="0.1.0")
 
 # ----- middleware -----------------------------------------------------------
 
-PUBLIC_PATHS = {"/healthz", "/v1/agents/register", "/docs", "/openapi.json", "/redoc"}
+PUBLIC_PATHS = {
+    "/healthz", "/v1/agents/register",
+    "/docs", "/openapi.json", "/redoc",
+    "/install", "/install.sh",
+    "/exp_uploader.py", "/exp_annotator.py", "/session_start.sh",
+    "/exp_consent.py", "/agent-contract.md",
+    "/opf_service.py", "/opf_filter.py",
+    "/session-extractor/run.sh",
+    "/session-extractor/extract_and_upload.py",
+    "/session-extractor/README.md",
+    # Email/password auth: register & login bootstrap a session before any
+    # HMAC credential exists, so they must be HMAC-public. Subsequent
+    # /v1/users/* calls validate via the session cookie middleware below.
+    "/v1/users/register", "/v1/users/login",
+}
+
+# Routes whose auth is "session cookie OR HMAC". Listed here so the HMAC
+# middleware passes them through to a per-route check rather than 401-ing
+# missing X-Agent-Name. Session validation happens inside the route.
+SESSION_AUTH_PATHS = {
+    "/v1/users/me", "/v1/users/me/bind-script", "/v1/users/logout",
+}
+
+
+# ----- bootstrap files (so `curl <base>/install | bash` works) --------------
+# Serves install.sh + Python clients out of dist-public/.  These paths are
+# PUBLIC (no HMAC) — they only contain installer code, not data.
+#
+# /install (and /install.sh) is special: we rewrite the hardcoded
+# `BASE="${EXP_BASE_URL:-https://expool.clawsii.com}"` line so the default
+# points at this server's URL, not the upstream public deployment. Clients
+# downloading the installer from `http://10.244.66.195:8081/install` will
+# automatically register and push to that same server, with no env var
+# overrides needed.
+
+_BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2] / "dist-public"
+_BOOTSTRAP_STATIC: dict[str, tuple[str, str]] = {
+    "/exp_uploader.py":     ("exp_uploader.py",     "text/x-python; charset=utf-8"),
+    "/exp_annotator.py":    ("exp_annotator.py",    "text/x-python; charset=utf-8"),
+    "/exp_consent.py":      ("exp_consent.py",      "text/x-python; charset=utf-8"),
+    "/session_start.sh":    ("session_start.sh",    "text/x-shellscript; charset=utf-8"),
+    "/agent-contract.md":   ("agent-contract.md",   "text/markdown; charset=utf-8"),
+    # OPF host bootstrap files — let the GPU machine `curl ... | bash`
+    # without needing repo access.
+    "/opf_service.py":      ("opf_service.py",      "text/x-python; charset=utf-8"),
+    "/opf_filter.py":       ("opf_filter.py",       "text/x-python; charset=utf-8"),
+    # session-extractor — standalone tool the user copies from /me page
+    # to bulk-upload local Claude/Codex sessions to their private repo.
+    "/session-extractor/run.sh":               ("session-extractor/run.sh",               "text/x-shellscript; charset=utf-8"),
+    "/session-extractor/extract_and_upload.py": ("session-extractor/extract_and_upload.py", "text/x-python; charset=utf-8"),
+    "/session-extractor/README.md":            ("session-extractor/README.md",            "text/markdown; charset=utf-8"),
+}
+
+
+def _patched_install_script(default_base: str) -> bytes:
+    """Read install.sh and rewrite the hardcoded BASE default to default_base."""
+    src = (_BOOTSTRAP_ROOT / "install.sh").read_bytes()
+    # Match: BASE="${EXP_BASE_URL:-https://expool.clawsii.com}"
+    import re as _re
+    new = _re.sub(
+        rb'BASE="\$\{EXP_BASE_URL:-[^"}]+\}"',
+        f'BASE="${{EXP_BASE_URL:-{default_base}}}"'.encode(),
+        src,
+        count=1,
+    )
+    return new
+
+
+def _register_bootstrap_routes() -> None:
+    from fastapi import Response
+
+    # Static files first.
+    for url_path, (rel, ct) in _BOOTSTRAP_STATIC.items():
+        full = _BOOTSTRAP_ROOT / rel
+
+        def _make_static(p: Path, content_type: str):
+            async def _h() -> Response:
+                if not p.is_file():
+                    raise HTTPException(status_code=404, detail=f"{p.name} not found")
+                return Response(content=p.read_bytes(), media_type=content_type)
+            return _h
+
+        app.add_api_route(url_path, _make_static(full, ct),
+                          methods=["GET"], include_in_schema=False)
+
+    # /install and /install.sh: dynamic — rewrites BASE to point at THIS server.
+    async def _install_handler(request: Request) -> "Response":
+        # Reconstruct the public-facing base URL from the request headers.
+        # Trust X-Forwarded-Proto / Host first (Caddy / nginx will set these).
+        proto = (request.headers.get("x-forwarded-proto")
+                 or ("https" if request.url.scheme == "https" else "http"))
+        host = (request.headers.get("x-forwarded-host")
+                or request.headers.get("host")
+                or f"{request.url.hostname}:{request.url.port}")
+        default_base = f"{proto}://{host}".rstrip("/")
+        try:
+            patched = _patched_install_script(default_base)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="install.sh not found on server")
+        return Response(content=patched,
+                        media_type="text/x-shellscript; charset=utf-8")
+
+    app.add_api_route("/install",    _install_handler, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/install.sh", _install_handler, methods=["GET"], include_in_schema=False)
+
+
+_register_bootstrap_routes()
 
 
 def _root_path() -> Path:
@@ -174,6 +281,13 @@ def _json_and_log(request: Request, payload: dict[str, Any], status_code: int) -
 @app.middleware("http")
 async def hmac_auth(request: Request, call_next):
     if request.url.path in PUBLIC_PATHS or request.url.path.startswith("/docs"):
+        limited = _rate_limit_response(request)
+        if limited is not None:
+            _log_request(request, limited.status_code, 0)
+            return limited
+        return await _call_and_log(request, call_next)
+    # Session-cookie auth: skip HMAC, let route validate the cookie itself.
+    if request.url.path in SESSION_AUTH_PATHS:
         limited = _rate_limit_response(request)
         if limited is not None:
             _log_request(request, limited.status_code, 0)
@@ -478,6 +592,17 @@ async def lite_push(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
+    # Reject card-only uploads by default. The pool is much less useful
+    # without the raw trajectory (no tool-call replay, no judge re-run,
+    # no SFT material). Operators who genuinely want lite-only ingest
+    # can set EXP_REQUIRE_TRAJECTORY=0.
+    if os.getenv("EXP_REQUIRE_TRAJECTORY", "1").lower() not in {"0", "false", "no"}:
+        if not req.trajectory:
+            raise HTTPException(
+                status_code=400,
+                detail="trajectory is required (set EXP_REQUIRE_TRAJECTORY=0 "
+                       "on the server to allow card-only pushes)",
+            )
     pool = _pool()
     actor = request.state.agent_name
     card = lite_mod.LiteCard(
@@ -498,10 +623,17 @@ async def lite_push(
     # Fire-and-forget auto-labeling. Uses a separate sqlite connection inside
     # the task so it never blocks the response.
     eid = result.get("experience_id")
+    db_path = str(pool.config.db_path)
     if eid and auto_label_mod._enabled():
-        db_path = str(pool.config.db_path)
         background_tasks.add_task(_safe_auto_label, db_path, eid)
         result["auto_label_queued"] = True
+    # Server-side title refinement: shells out to local `claude -p` to
+    # generate a one-line summary of the WHOLE conversation, then
+    # overwrites `intent_text` if the result looks usable. Runs as a
+    # BackgroundTask so push response time isn't affected.
+    if eid and title_refine_mod._enabled():
+        background_tasks.add_task(_safe_refine_title, db_path, eid)
+        result["title_refine_queued"] = True
     return result
 
 
@@ -510,6 +642,13 @@ def _safe_auto_label(db_path: str, eid: str) -> None:
         auto_label_mod.auto_label_experience(db_path, eid)
     except Exception as e:
         LOG.warning("auto_label failed", experience_id=eid, error=str(e)[:200])
+
+
+def _safe_refine_title(db_path: str, eid: str) -> None:
+    try:
+        title_refine_mod.refine_title_for_experience(db_path, eid)
+    except Exception as e:
+        LOG.warning("title_refine failed", experience_id=eid, error=str(e)[:200])
 
 
 @app.post("/v1/lite/search")
@@ -939,3 +1078,205 @@ async def admin_auto_label(req: dict[str, Any], request: Request,
     for eid in eids:
         background_tasks.add_task(_safe_auto_label, db_path, eid)
     return {"queued": len(eids), "experience_ids": eids[:20]}
+
+
+# ----- email/password user auth ---------------------------------------------
+
+from . import users as _users_mod  # noqa: E402
+
+
+SESSION_COOKIE = "exp_session"
+
+
+class UserRegisterReq(BaseModel):
+    email: str
+    password: str
+    display_name: str | None = None
+
+
+class UserLoginReq(BaseModel):
+    email: str
+    password: str
+
+
+def _public_base_url(request: Request) -> str:
+    """Compute the URL the bind script should embed.
+
+    Priority:
+      1. EXP_BIND_BASE_URL env (operator-set; intranet IP / hostname)
+      2. X-Forwarded-Host + X-Forwarded-Proto (set by reverse proxies)
+      3. Host header on the request
+
+    For intranet deployments where agents on other machines must curl
+    a fixed IP, set EXP_BIND_BASE_URL=http://10.x.y.z:8081 — without it
+    we fall back to the request Host, which is usually 127.0.0.1 when
+    the UI calls us server-side (useless to other machines).
+    """
+    explicit = os.getenv("EXP_BIND_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    proto = (request.headers.get("x-forwarded-proto")
+             or ("https" if request.url.scheme == "https" else "http"))
+    host = (request.headers.get("x-forwarded-host")
+            or request.headers.get("host")
+            or f"{request.url.hostname}:{request.url.port}")
+    return f"{proto}://{host}".rstrip("/")
+
+
+def _set_session_cookie(resp: JSONResponse, token: str, expires: int) -> None:
+    resp.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=expires - int(time.time()),
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+@app.post("/v1/admin/refine-titles")
+async def admin_refine_titles(req: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Backfill `intent_text` on already-uploaded experiences using local
+    `claude -p`. Body:
+      owner: optional email (e.g. xhh666@sii.edu.cn) to scope the pass
+      limit: max rows to refine in one call (default 100)
+    """
+    pool = _pool()
+    owner = req.get("owner")
+    limit = int(req.get("limit", 100))
+    db_path = str(pool.config.db_path)
+    return title_refine_mod.refine_titles_batch(db_path, owner=owner, limit=limit)
+
+
+def _current_user_or_401(request: Request) -> _users_mod.User:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        raise HTTPException(status_code=401, detail="not logged in")
+    pool = _pool()
+    user = _users_mod.lookup_session(pool.conn, token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    return user
+
+
+@app.post("/v1/users/register")
+async def user_register(req: UserRegisterReq, request: Request) -> JSONResponse:
+    pool = _pool()
+    try:
+        user, cred = _users_mod.register_user(
+            pool.conn,
+            email=req.email,
+            password=req.password,
+            display_name=req.display_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Auto-login: issue a session so the client can hit /me/bind-script
+    # immediately without a separate login step.
+    ua = request.headers.get("user-agent")
+    ip = request.client.host if request.client else None
+    token, expires = _users_mod.create_session(
+        pool.conn, user_id=user.user_id, user_agent=ua, ip=ip,
+    )
+    base = _public_base_url(request)
+    bind_cmd = _users_mod.render_bind_script(
+        base_url=base, agent_name=cred["agent_name"], secret=cred["secret"],
+        team=cred.get("team", "default"), agent_id=cred.get("agent_id"),
+    )
+    body = {
+        "user_id": user.user_id,
+        "email": user.email,
+        "default_agent_name": user.default_agent_name,
+        "agent_id": cred["agent_id"],
+        "secret": cred["secret"],
+        "bind_command": bind_cmd,
+        "session_expires_at": expires,
+    }
+    resp = JSONResponse(body, status_code=201)
+    _set_session_cookie(resp, token, expires)
+    return resp
+
+
+@app.post("/v1/users/login")
+async def user_login(req: UserLoginReq, request: Request) -> JSONResponse:
+    pool = _pool()
+    try:
+        email = _users_mod.validate_email(req.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    user = _users_mod.authenticate(pool.conn, email=email, password=req.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid email or password")
+    ua = request.headers.get("user-agent")
+    ip = request.client.host if request.client else None
+    token, expires = _users_mod.create_session(
+        pool.conn, user_id=user.user_id, user_agent=ua, ip=ip,
+    )
+    body = {
+        "user_id": user.user_id,
+        "email": user.email,
+        "default_agent_name": user.default_agent_name,
+        "session_expires_at": expires,
+    }
+    resp = JSONResponse(body)
+    _set_session_cookie(resp, token, expires)
+    return resp
+
+
+@app.post("/v1/users/logout")
+async def user_logout(request: Request) -> JSONResponse:
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        pool = _pool()
+        _users_mod.revoke_session(pool.conn, token)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/v1/users/me")
+async def user_me(request: Request) -> dict[str, Any]:
+    user = _current_user_or_401(request)
+    return {
+        "user_id": user.user_id,
+        "email": user.email,
+        "default_agent_name": user.default_agent_name,
+        "display_name": user.display_name,
+    }
+
+
+@app.get("/v1/users/me/bind-script")
+async def user_bind_script(request: Request) -> dict[str, Any]:
+    user = _current_user_or_401(request)
+    cred = _users_mod.get_credential_for_user(user)
+    if cred is None:
+        raise HTTPException(status_code=500,
+                            detail="credential file missing — re-register or contact admin")
+    base = _public_base_url(request)
+    cmd = _users_mod.render_bind_script(
+        base_url=base, agent_name=cred["agent_name"], secret=cred["secret"],
+        team=cred.get("team", "default"),
+    )
+    # Backfill extractor command — same identity/secret, but goes to a
+    # different one-shot tool that scrapes ~/.claude / ~/.codex etc. and
+    # uploads each session privately. acl=private is hardcoded in the
+    # Python script; users physically cannot make these uploads public
+    # via this command.
+    extract_cmd = (
+        f"curl -fsSL {base.rstrip('/')}/session-extractor/run.sh | "
+        f"EXP_AGENT_NAME='{cred['agent_name']}' "
+        f"EXP_AGENT_SECRET='{cred['secret']}' "
+        f"EXP_BASE_URL='{base.rstrip('/')}' "
+        f"bash"
+    )
+    return {
+        "agent_name": cred["agent_name"],
+        "agent_id": cred["agent_id"],
+        "team": cred.get("team", "default"),
+        "secret_hint": cred["secret"][:6] + "..." + cred["secret"][-4:],
+        "bind_command": cmd,
+        "extract_command": extract_cmd,
+        "base_url": base,
+    }
+

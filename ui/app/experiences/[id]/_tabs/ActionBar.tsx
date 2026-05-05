@@ -16,6 +16,7 @@ import {
 } from "@/app/_actions/actions";
 import type { ExperienceListItem } from "@/lib/types";
 import { cn, tryParseJson } from "@/lib/utils";
+import { withBase } from "@/lib/base-path";
 
 export function ActionBar({
   id,
@@ -61,7 +62,7 @@ export function ActionBar({
             </SubmitButton>
           </form>
           <a
-            href={`/api/export/${encodeURIComponent(id)}`}
+            href={withBase(`/api/export/${encodeURIComponent(id)}`)}
             className={cn(buttonVariants({ variant: "outline" }), "h-9")}
           >
             导出 JSON

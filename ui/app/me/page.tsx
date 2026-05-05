@@ -7,39 +7,65 @@ import {
   Globe2,
   Lock,
   Sparkles,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { listMyExperiences, getOwnerQuota } from "@/lib/me-queries";
+import {
+  listMyExperiences,
+  getOwnerQuota,
+  getMyExperienceStats,
+} from "@/lib/me-queries";
 import { getReviewerName } from "@/lib/auth";
 import { formatDate, shortId } from "@/lib/utils";
 import RevokeButton from "./RevokeButton";
 import PublishButton from "./PublishButton";
+import BackfillCard from "./BackfillCard";
 
 export const dynamic = "force-dynamic";
 
 interface PageProps {
-  searchParams: Promise<{ include_revoked?: string }>;
+  searchParams: Promise<{ include_revoked?: string; page?: string }>;
 }
+
+const PAGE_SIZE = 200;
 
 export default async function MePage({ searchParams }: PageProps) {
   const params = await searchParams;
   const includeRevoked = params.include_revoked === "1";
+  const currentPage = Math.max(1, Number.parseInt(params.page ?? "1", 10) || 1);
   const viewer = await getReviewerName();
-  const [rows, quota] = await Promise.all([
-    listMyExperiences(viewer, { includeRevoked, limit: 200 }),
+  const [quota, stats] = await Promise.all([
     getOwnerQuota(viewer),
+    getMyExperienceStats(viewer),
   ]);
 
-  const live = rows.filter((r) => !r.revoked).length;
-  const revoked = rows.filter((r) => r.revoked).length;
-  const published = rows.filter((r) => r.publish_status === "published").length;
+  const totalForView = includeRevoked ? stats.total : stats.live;
+  const totalPages = Math.max(1, Math.ceil(totalForView / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const offset = (safePage - 1) * PAGE_SIZE;
+  const rows = await listMyExperiences(viewer, {
+    includeRevoked,
+    limit: PAGE_SIZE,
+    offset,
+  });
+  const firstShown = totalForView === 0 ? 0 : offset + 1;
+  const lastShown = Math.min(offset + rows.length, totalForView);
   const progressPct = Math.min(
     100,
     (quota.publish_count / quota.threshold) * 100
   );
+  const pageHref = (page: number) => {
+    const q = new URLSearchParams();
+    if (includeRevoked) q.set("include_revoked", "1");
+    if (page > 1) q.set("page", String(page));
+    const qs = q.toString();
+    return `/me${qs ? `?${qs}` : ""}`;
+  };
 
   return (
     <div className="flex flex-col gap-6 pb-12">
+      <BackfillCard />
       <section className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-white/85 px-5 py-4">
         <div className="flex items-center gap-2 text-sm">
           <ShieldCheck className="h-4 w-4 text-cyan-700" />
@@ -49,14 +75,14 @@ export default async function MePage({ searchParams }: PageProps) {
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <Badge className="bg-cyan-100 text-cyan-900 font-mono">{live} 私有</Badge>
+          <Badge className="bg-cyan-100 text-cyan-900 font-mono">{stats.live} 私有</Badge>
           <Badge className="bg-emerald-100 text-emerald-900 font-mono">
             <Globe2 className="mr-0.5 inline h-3 w-3" />
-            {published} 已发布
+            {stats.published} 已发布
           </Badge>
-          {revoked > 0 ? (
+          {stats.revoked > 0 ? (
             <Badge className="bg-rose-100 text-rose-900 font-mono">
-              {revoked} 已撤回
+              {stats.revoked} 已撤回
             </Badge>
           ) : null}
           <Link
@@ -133,11 +159,18 @@ export default async function MePage({ searchParams }: PageProps) {
         </section>
       ) : (
         <section className="rounded-2xl border border-border/60 bg-white/85">
-          <div className="border-b border-border/60 px-4 py-3 text-sm">
-            <span className="font-semibold">{rows.length}</span>
-            <span className="text-muted-foreground">
-              {" "}条 · 按上传时间倒序
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3 text-sm">
+            <div>
+              <span className="font-semibold">{totalForView}</span>
+              <span className="text-muted-foreground">
+                {" "}条 · 当前 {firstShown}-{lastShown} · 按上传时间倒序
+              </span>
+            </div>
+            <PaginationControls
+              currentPage={safePage}
+              totalPages={totalPages}
+              pageHref={pageHref}
+            />
           </div>
           <ul className="divide-y divide-border/60">
             {rows.map((r) => {
@@ -162,6 +195,15 @@ export default async function MePage({ searchParams }: PageProps) {
                     <Badge variant="outline" className="font-mono">
                       {r.task_type}
                     </Badge>
+                    {!r.trajectory_path ? (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-500/40 bg-amber-50 text-[10px] text-amber-800 font-mono"
+                        title="只上传了卡片,没有原始对话"
+                      >
+                        无原文
+                      </Badge>
+                    ) : null}
                     {publishStatus === "published" ? (
                       <Badge className="bg-emerald-100 text-emerald-900 font-mono text-[10px]">
                         <Globe2 className="mr-0.5 inline h-3 w-3" />
@@ -229,7 +271,63 @@ export default async function MePage({ searchParams }: PageProps) {
               );
             })}
           </ul>
+          {totalPages > 1 ? (
+            <div className="flex justify-end border-t border-border/60 px-4 py-3">
+              <PaginationControls
+                currentPage={safePage}
+                totalPages={totalPages}
+                pageHref={pageHref}
+              />
+            </div>
+          ) : null}
         </section>
+      )}
+    </div>
+  );
+}
+
+function PaginationControls({
+  currentPage,
+  totalPages,
+  pageHref,
+}: {
+  currentPage: number;
+  totalPages: number;
+  pageHref: (page: number) => string;
+}) {
+  const prevPage = Math.max(1, currentPage - 1);
+  const nextPage = Math.min(totalPages, currentPage + 1);
+  const buttonClass =
+    "inline-flex h-8 items-center gap-1 rounded-md border border-border/70 px-2.5 text-xs font-medium";
+  const disabledClass =
+    "inline-flex h-8 items-center gap-1 rounded-md border border-border/40 px-2.5 text-xs text-muted-foreground opacity-50";
+
+  return (
+    <div className="flex items-center gap-2">
+      {currentPage <= 1 ? (
+        <span className={disabledClass}>
+          <ChevronLeft className="h-3.5 w-3.5" />
+          上一页
+        </span>
+      ) : (
+        <Link href={pageHref(prevPage)} className={`${buttonClass} hover:bg-muted/50`}>
+          <ChevronLeft className="h-3.5 w-3.5" />
+          上一页
+        </Link>
+      )}
+      <span className="font-mono text-xs text-muted-foreground">
+        {currentPage} / {totalPages}
+      </span>
+      {currentPage >= totalPages ? (
+        <span className={disabledClass}>
+          下一页
+          <ChevronRight className="h-3.5 w-3.5" />
+        </span>
+      ) : (
+        <Link href={pageHref(nextPage)} className={`${buttonClass} hover:bg-muted/50`}>
+          下一页
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Link>
       )}
     </div>
   );

@@ -7,7 +7,7 @@ import { formatDate } from "@/lib/utils";
 export const dynamic = "force-dynamic";
 
 export default async function SessionsPage() {
-  const sessions = listRecentSessions(50);
+  const sessions = await listRecentSessions(50);
 
   return (
     <div className="flex flex-col gap-6 pb-12">

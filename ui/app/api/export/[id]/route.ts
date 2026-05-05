@@ -15,7 +15,7 @@ export async function GET(
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id } = await ctx.params;
-  const exp = getExperience(id);
+  const exp = await getExperience(id);
   if (!exp) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }

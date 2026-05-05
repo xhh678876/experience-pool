@@ -30,7 +30,7 @@ export default async function ExperiencesPage({
   searchParams: Promise<SearchParams>;
 }) {
   const sp = await searchParams;
-  const items = listExperiences({
+  const items = await listExperiences({
     reviewStatus: sp.status,
     taskType: sp.task,
     sensitivity: sp.sensitivity,
@@ -150,6 +150,15 @@ export default async function ExperiencesPage({
                 <Badge variant="outline" className="border-border/60 bg-white/40 text-[11px] text-muted-foreground">
                   {e.task_type}
                 </Badge>
+                {!e.trajectory_path ? (
+                  <Badge
+                    variant="outline"
+                    className="border-amber-500/40 bg-amber-50 text-[11px] text-amber-800"
+                    title="只上传了卡片摘要,没有原始对话(--no-trace 或老 client)"
+                  >
+                    无原文
+                  </Badge>
+                ) : null}
               </div>
               <h3 className="line-clamp-2 text-sm font-semibold leading-6 text-foreground group-hover:text-cyan-900">
                 {e.intent_text || "(无 intent)"}

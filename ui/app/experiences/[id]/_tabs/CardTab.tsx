@@ -29,10 +29,12 @@ export function CardTab({
   experience,
   reward,
   updates,
+  toolUsage,
 }: {
   experience: ExperienceListItem;
   reward: RewardRow | null;
   updates: QUpdateRow[];
+  toolUsage?: Record<string, number>;
 }) {
   const rawSteps = tryParseJson<RawStep[]>(experience.script_steps) ?? [];
   const steps = normalizeSteps(rawSteps);
@@ -126,6 +128,9 @@ export function CardTab({
             </CardContent>
           </Card>
         ) : null}
+
+        <ToolUsageCard usage={toolUsage} />
+
 
         {lite ? (
           <div className="rounded-md border border-amber-300/50 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -225,6 +230,40 @@ export function CardTab({
         <QHistoryCard updates={updates} />
       </div>
     </div>
+  );
+}
+
+function ToolUsageCard({ usage }: { usage?: Record<string, number> }) {
+  const entries = Object.entries(usage ?? {}).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return null;
+  const total = entries.reduce((s, [, n]) => s + n, 0);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>
+          调用工具
+          <span className="ml-2 text-xs font-normal text-muted-foreground">
+            共 {total} 次 · {entries.length} 种
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-2">
+          {entries.map(([name, n]) => (
+            <span
+              key={name}
+              className="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 text-xs font-mono"
+            >
+              {name}
+              <span className="text-muted-foreground">×{n}</span>
+            </span>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          仅展示工具名与次数。完整入参 / 返回请到上方"对话"tab 查看。
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 

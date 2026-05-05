@@ -24,10 +24,28 @@ const hopByHopHeaders = new Set([
   "upgrade",
 ]);
 
+// FastAPI handles its own /v1/* + docs + bootstrap files (install.sh,
+// uploader, etc.). Anything not matched here is treated as UI.
+const apiExactPaths = new Set([
+  "/healthz",
+  "/openapi.json",
+  "/install",
+  "/install.sh",
+  "/exp_uploader.py",
+  "/exp_annotator.py",
+  "/exp_consent.py",
+  "/session_start.sh",
+  "/agent-contract.md",
+  "/opf_service.py",
+  "/opf_filter.py",
+  "/session-extractor/run.sh",
+  "/session-extractor/extract_and_upload.py",
+  "/session-extractor/README.md",
+]);
+
 function routeForPath(pathname) {
   if (
-    pathname === "/healthz" ||
-    pathname === "/openapi.json" ||
+    apiExactPaths.has(pathname) ||
     pathname.startsWith("/v1/") ||
     pathname.startsWith("/docs") ||
     pathname.startsWith("/redoc")

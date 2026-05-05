@@ -1,22 +1,8 @@
 import type { Metadata } from "next";
-import Link from "@/components/ui/link";
-import {
-  Activity,
-  Award,
-  Boxes,
-  Database,
-  Gauge,
-  Globe2,
-  Layers3,
-  LayoutDashboard,
-  Search,
-  Settings,
-  ShieldCheck,
-  Wrench,
-} from "lucide-react";
 import "./globals.css";
-import { getReviewerName } from "@/lib/auth";
 import AutoRefresh from "@/components/ui/auto-refresh";
+import MainNav from "@/components/MainNav";
+import UserPanel from "@/components/UserPanel";
 
 export const metadata: Metadata = {
   title: "创智经验池",
@@ -269,7 +255,6 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const reviewer = await getReviewerName();
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head>
@@ -284,120 +269,10 @@ export default async function RootLayout({
       >
         <header className="sticky top-0 z-40 border-b border-border/70 bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/78">
           <div className="mx-auto flex min-h-12 max-w-[1600px] flex-col gap-2 px-3 py-2 lg:h-12 lg:flex-row lg:items-center lg:justify-between lg:py-0">
-            <nav className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <Link
-                href="/"
-                className="mr-2 inline-flex min-w-0 items-center gap-2 rounded-md px-1 py-1 text-sm font-semibold hover:bg-muted/50"
-                title="创智经验池"
-              >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-cyan-600/25 bg-cyan-50 text-cyan-700">
-                  智
-                </span>
-                <span className="truncate">创智经验池</span>
-              </Link>
-              <Link
-                href="/"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="内网 MVP"
-              >
-                <LayoutDashboard className="h-4 w-4" />
-                内网 MVP
-              </Link>
-              <Link
-                href="/search"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="向量检索"
-              >
-                <Search className="h-4 w-4" />
-                检索
-              </Link>
-              <Link
-                href="/sessions"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="按 session 聚合"
-              >
-                <Boxes className="h-4 w-4" />
-                Session
-              </Link>
-              <Link
-                href="/experiences"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="经验库"
-              >
-                <Database className="h-4 w-4" />
-                经验库
-              </Link>
-              <Link
-                href="/rewards"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="奖励标注"
-              >
-                <Award className="h-4 w-4" />
-                奖励
-              </Link>
-              <Link
-                href="/clusters"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="经验簇 + 结晶"
-              >
-                <Layers3 className="h-4 w-4" />
-                经验簇
-              </Link>
-              <Link
-                href="/skills"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="技能预留"
-              >
-                <Wrench className="h-4 w-4" />
-                技能
-              </Link>
-              <Link
-                href="/me"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="我的经验 + 撤回"
-              >
-                <ShieldCheck className="h-4 w-4" />
-                我的
-              </Link>
-              <Link
-                href="/community"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="社区池（需先发布 3 条解锁）"
-              >
-                <Globe2 className="h-4 w-4" />
-                社区
-              </Link>
-              <Link
-                href="/consent"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="本地 consent.json 编辑器"
-              >
-                <Settings className="h-4 w-4" />
-                Consent
-              </Link>
-              <Link
-                href="/admin"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                title="池统计"
-              >
-                <Gauge className="h-4 w-4" />
-                Admin
-              </Link>
-            </nav>
-            <div className="flex flex-wrap items-center gap-1.5 text-sm">
-              <span className="inline-flex h-7 items-center gap-1.5 rounded-md border border-emerald-500/25 bg-emerald-50 px-2 text-xs text-emerald-700">
-                <Activity className="h-3.5 w-3.5" />
-                内网在线
-              </span>
-              <span className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/70 bg-muted/35 px-2 text-xs text-muted-foreground">
-                <Gauge className="h-3.5 w-3.5" />
-                Lite MVP
-              </span>
+            <MainNav />
+            <div className="flex items-center gap-2">
               <AutoRefresh intervalMs={5000} />
-              <span className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/70 bg-muted/35 px-2 text-xs">
-                <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
-                {reviewer}
-              </span>
+              <UserPanel />
             </div>
           </div>
         </header>

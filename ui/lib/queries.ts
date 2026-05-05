@@ -1,4 +1,5 @@
 import { getDb } from "./db";
+import { aclVisibilityClause, aclVisibilityForDetail } from "./acl-filter";
 import type {
   AuditRow,
   EdgeRow,
@@ -18,33 +19,41 @@ export type ListFilters = {
   offset?: number;
 };
 
-export function listExperiences(filters: ListFilters = {}): ExperienceListItem[] {
+export async function listExperiences(filters: ListFilters = {}): Promise<ExperienceListItem[]> {
   const db = getDb();
   const where: string[] = [];
   const params: unknown[] = [];
 
   if (filters.reviewStatus && filters.reviewStatus !== "all") {
-    where.push("review_status = ?");
+    where.push("e.review_status = ?");
     params.push(filters.reviewStatus);
   }
   if (filters.taskType && filters.taskType !== "all") {
-    where.push("task_type = ?");
+    where.push("e.task_type = ?");
     params.push(filters.taskType);
   }
   if (filters.sensitivity && filters.sensitivity !== "all") {
-    where.push("sensitivity = ?");
+    where.push("e.sensitivity = ?");
     params.push(filters.sensitivity);
   }
   if (filters.search && filters.search.trim().length > 0) {
-    where.push("(intent_text LIKE ? OR experience_id LIKE ?)");
+    where.push("(e.intent_text LIKE ? OR e.experience_id LIKE ?)");
     const term = `%${filters.search.trim()}%`;
     params.push(term, term);
   }
 
+  // ACL: hide private rows from anyone except the owner.
+  const acl = await aclVisibilityClause();
+  where.push(acl.sql);
+  params.push(...acl.params);
+  // Don't list revoked rows in the global browse.
+  where.push("COALESCE(e.revoked, 0) = 0");
+
   const sql = `
-    SELECT * FROM experiences
-    ${where.length ? "WHERE " + where.join(" AND ") : ""}
-    ORDER BY created_at DESC
+    SELECT e.* FROM experiences e
+    LEFT JOIN agents a ON a.agent_id = e.agent_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY e.created_at DESC
     LIMIT ? OFFSET ?
   `;
   params.push(filters.limit ?? 100);
@@ -62,11 +71,19 @@ export function distinctValues(column: "task_type" | "sensitivity" | "review_sta
   return rows.map((r) => r.v).filter((v) => v != null);
 }
 
-export function getExperience(id: string): ExperienceListItem | null {
+export async function getExperience(id: string): Promise<ExperienceListItem | null> {
   const db = getDb();
+  // Detail-page ACL: public OR owner's own. (Listing pages use the
+  // stricter `aclVisibilityClause()` which hides private from everyone
+  // including the owner; click-throughs from /me must work though.)
+  const acl = await aclVisibilityForDetail();
   const row = db
-    .prepare("SELECT * FROM experiences WHERE experience_id = ?")
-    .get(id) as ExperienceRow | undefined;
+    .prepare(
+      `SELECT e.* FROM experiences e
+       LEFT JOIN agents a ON a.agent_id = e.agent_id
+       WHERE e.experience_id = ? AND ${acl.sql}`,
+    )
+    .get(id, ...acl.params) as ExperienceRow | undefined;
   if (!row) return null;
   return { ...row, q_scalar: qScalar(row) };
 }
@@ -143,9 +160,11 @@ export type SessionGroup = {
   agent_name: string | null;
 };
 
-export function listRecentSessions(limit = 20): SessionGroup[] {
+export async function listRecentSessions(limit = 20): Promise<SessionGroup[]> {
   try {
     const db = getDb();
+    // ACL-filter: don't show other users' private content on the home page.
+    const acl = await aclVisibilityClause();
     // Pull recent experiences with their meta (which contains segment / agent_type info)
     const rows = db
       .prepare(
@@ -159,10 +178,12 @@ export function listRecentSessions(limit = 20): SessionGroup[] {
             SELECT experience_id, NULL AS body FROM experiences
          ) tp ON tp.experience_id = e.experience_id
          WHERE COALESCE(e.ingest_path, 'full') = 'lite'
+           AND COALESCE(e.revoked, 0) = 0
+           AND ${acl.sql}
          ORDER BY e.created_at DESC
          LIMIT ?`,
       )
-      .all(limit * 6) as Array<{
+      .all(...acl.params, limit * 6) as Array<{
         experience_id: string;
         intent_text: string;
         task_type: string;
@@ -256,15 +277,17 @@ export function listRecentSessions(limit = 20): SessionGroup[] {
   }
 }
 
-export function topAgentsByContribution(limit = 10): {
+export async function topAgentsByContribution(limit = 10): Promise<{
   agent_id: string;
   agent_name: string;
   team: string;
   experiences: number;
   last_active: string;
-}[] {
+}[]> {
   try {
     const db = getDb();
+    // Only count experiences the current viewer can see.
+    const acl = await aclVisibilityClause();
     return db
       .prepare(
         `SELECT a.agent_id, a.name AS agent_name, a.team,
@@ -272,12 +295,14 @@ export function topAgentsByContribution(limit = 10): {
                 MAX(e.created_at) AS last_active
          FROM agents a
          LEFT JOIN experiences e ON e.agent_id = a.agent_id
+              AND COALESCE(e.revoked, 0) = 0
+              AND ${acl.sql}
          GROUP BY a.agent_id
          HAVING experiences > 0
          ORDER BY experiences DESC, last_active DESC
          LIMIT ?`,
       )
-      .all(limit) as Array<{
+      .all(...acl.params, limit) as Array<{
         agent_id: string;
         agent_name: string;
         team: string;

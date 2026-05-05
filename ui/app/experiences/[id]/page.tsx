@@ -59,7 +59,7 @@ export default async function ExperienceDetailPage({
     ? (requestedTab as (typeof TABS)[number]["key"])
     : "card";
 
-  const exp = getExperience(id);
+  const exp = await getExperience(id);
   if (!exp) notFound();
 
   const reward = getLatestReward(id);
@@ -173,7 +173,12 @@ export default async function ExperienceDetailPage({
       </div>
 
       {tab === "card" ? (
-        <CardTab experience={exp} reward={reward} updates={updates} />
+        <CardTab
+          experience={exp}
+          reward={reward}
+          updates={updates}
+          toolUsage={trajectory.toolUsage}
+        />
       ) : null}
 
       {tab === "trajectory" ? (

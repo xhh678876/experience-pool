@@ -12,6 +12,10 @@ if (PUBLIC_URL) {
 const nextConfig = {
   serverExternalPackages: ["better-sqlite3"],
   ...(PUBLIC_URL ? { assetPrefix: PUBLIC_URL } : {}),
+  // dev server uses .next; one-shot type-checks / production builds
+  // should set NEXT_DIST_DIR to a separate dir so they don't clobber
+  // the dev cache (which causes "Cannot find module './611.js'" 500s).
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   env: {
     NEXT_PUBLIC_UI_BASE: PUBLIC_PATH,
   },

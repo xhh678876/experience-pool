@@ -23,6 +23,15 @@ export function getDb(): Database.Database {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  // The FastAPI server (port 8081) writes to the same pool.db (push,
+  // publish, judge, OPF, …) and some of those transactions hold the
+  // writer for >5s (model load, embedding batch). We pick 30s as the UI
+  // budget — better to render late than to 500. Reads in WAL mode never
+  // block on the writer, so this only affects the (rare) UI-side writes.
+  db.pragma("busy_timeout = 30000");
+  // Use NORMAL synchronous since WAL is on; it's safe and ~10x faster
+  // for the UI's tiny inserts under contention.
+  db.pragma("synchronous = NORMAL");
 
   // Ensure helper tables for the reviewer exist (without touching the Python schema).
   db.exec(`

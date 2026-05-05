@@ -220,11 +220,21 @@ def push_lite(
     `experiences.trajectory_path` so the UI's Trajectory tab can render it.
 
     No judge, no extractor, no credit. The point is: searchable now."""
+    import time as _time
+    import os as _os2
+    _PROF = _os2.environ.get("EXP_PROFILE_PUSH", "0") == "1"
+    _t0 = _time.perf_counter()
+    _ts: list[tuple[str, float]] = []
+    def _mark(label: str) -> None:
+        if _PROF:
+            _ts.append((label, _time.perf_counter() - _t0))
+
     cur = conn.execute("SELECT agent_id, team FROM agents WHERE name = ?", (agent_name,))
     row = cur.fetchone()
     if row is None:
         raise ValueError(f"unknown agent: {agent_name}")
     agent_id = row["agent_id"]
+    _mark("agent_lookup")
 
     # Idempotent push (Ultron-style). If this exact trajectory + agent has
     # been pushed before, return the existing experience_id without writing
@@ -232,6 +242,7 @@ def push_lite(
     # the pool.
     from . import quality as quality_mod
     fingerprint = quality_mod.compute_fingerprint(trajectory)
+    _mark("fingerprint")
     if fingerprint:
         existing = quality_mod.find_existing_by_fingerprint(
             conn, fingerprint=fingerprint, agent_id=agent_id,
@@ -255,6 +266,40 @@ def push_lite(
     server_high = False
     opf_high = False
 
+    # OPF is the slow part of the sanitize pipeline. Three modes:
+    #   1. EXP_DEFER_OPF=1            — skip OPF; mark row 'layer1_only';
+    #                                   a worker backfills later
+    #   2. EXP_OPF_REMOTE_URL=http... — call remote OPF service over HTTP
+    #                                   (recommended: deploys OPF on a
+    #                                   separate GPU machine, keeps main
+    #                                   API responsive)
+    #   3. neither set                — load OPF in-process (slow, legacy)
+    import os as _os
+    defer_opf = _os.getenv("EXP_DEFER_OPF", "0").lower() not in {"0", "false", "no", ""}
+    remote_opf_url = _os.getenv("EXP_OPF_REMOTE_URL", "").rstrip("/")
+    remote_opf_token = _os.getenv("EXP_OPF_AUTH_TOKEN", "")
+    remote_opf_timeout = float(_os.getenv("EXP_OPF_TIMEOUT_SECONDS", "8"))
+
+    def _opf_remote(text: str) -> tuple[str, dict[str, int], bool]:
+        """Call the remote OPF service. Returns (cleaned, hits, triggered_high).
+        On any failure, falls through to (text, {}, False) so the push path
+        does not break — the main contract is "best-effort sanitize".
+        """
+        import json as _json
+        import urllib.request as _u
+        body = _json.dumps({"text": text}).encode("utf-8")
+        headers = {"content-type": "application/json"}
+        if remote_opf_token:
+            headers["x-opf-token"] = remote_opf_token
+        req = _u.Request(f"{remote_opf_url}/redact-text", data=body,
+                         headers=headers, method="POST")
+        try:
+            with _u.urlopen(req, timeout=remote_opf_timeout) as resp:
+                d = _json.load(resp)
+        except Exception:
+            return text, {}, False
+        return d.get("text", text), d.get("hits", {}) or {}, bool(d.get("triggered_high"))
+
     def _scrub_str(val: str) -> str:
         nonlocal server_high, opf_high
         if not val:
@@ -263,6 +308,17 @@ def push_lite(
         for k, v in c.items():
             redactions[k] = redactions.get(k, 0) + v
         server_high = server_high or hi
+        if defer_opf:
+            return cleaned  # layer1_only mode
+        if remote_opf_url:
+            cleaned2, hits, triggered = _opf_remote(cleaned)
+            if hits:
+                cleaned = cleaned2
+                for label, n in hits.items():
+                    key = f"opf_{label}"
+                    redactions[key] = redactions.get(key, 0) + n
+                opf_high = opf_high or triggered
+            return cleaned
         if opf_filter.is_enabled():
             res = opf_filter.redact_text(cleaned)
             if res.hits:
@@ -276,6 +332,7 @@ def push_lite(
     for attr in ("query", "intent", "outcome"):
         setattr(card, attr, _scrub_str(getattr(card, attr)))
     card.steps = [_scrub_str(s) for s in card.steps]
+    _mark("sanitize_card")
 
     # If a raw trajectory was sent, recursively sanitize every text-bearing
     # field. Trajectories may use any of:
@@ -302,7 +359,11 @@ def push_lite(
             "usage", "index",
         }
 
-        opf_on = opf_filter.is_enabled()
+        # Honor the same defer_opf / remote_opf_url switches as _scrub_str.
+        # Without this, trajectory walking calls OPF in-process per string,
+        # which dwarfs everything else: a 4-turn session takes 55s on cpu
+        # with only Layer 1 fast and OPF model-bound.
+        opf_on = (not defer_opf) and (not remote_opf_url) and opf_filter.is_enabled()
 
         def _walk(node: Any) -> Any:
             nonlocal server_high, opf_high
@@ -319,6 +380,14 @@ def push_lite(
                             key = f"opf_{label}"
                             redactions[key] = redactions.get(key, 0) + n
                         opf_high = opf_high or res.triggered_high
+                elif remote_opf_url:
+                    cleaned2, hits, triggered = _opf_remote(cleaned)
+                    if hits:
+                        cleaned = cleaned2
+                        for label, n in hits.items():
+                            key = f"opf_{label}"
+                            redactions[key] = redactions.get(key, 0) + n
+                        opf_high = opf_high or triggered
                 return cleaned
             if isinstance(node, list):
                 return [_walk(item) for item in node]
@@ -336,6 +405,7 @@ def push_lite(
             _walk(t) if isinstance(t, dict) else {"content": _walk(str(t))}
             for t in trajectory
         ]
+    _mark("sanitize_trajectory")
 
     # Sanitize system / tools / meta with the same recursive walker.
     cleaned_system = None
@@ -349,7 +419,7 @@ def push_lite(
                 "name", "subtype", "model", "stop_reason", "stop_sequence",
                 "usage", "index",
             }
-            opf_on_aux = opf_filter.is_enabled()
+            opf_on_aux = (not defer_opf) and (not remote_opf_url) and opf_filter.is_enabled()
 
             def _walk(node: Any) -> Any:  # noqa: F811
                 nonlocal server_high, opf_high
@@ -366,6 +436,14 @@ def push_lite(
                                 key = f"opf_{label}"
                                 redactions[key] = redactions.get(key, 0) + n
                             opf_high = opf_high or res.triggered_high
+                    elif remote_opf_url:
+                        cleaned2, hits, triggered = _opf_remote(cleaned)
+                        if hits:
+                            cleaned = cleaned2
+                            for label, n in hits.items():
+                                key = f"opf_{label}"
+                                redactions[key] = redactions.get(key, 0) + n
+                            opf_high = opf_high or triggered
                     return cleaned
                 if isinstance(node, list):
                     return [_walk(x) for x in node]
@@ -386,9 +464,14 @@ def push_lite(
     # OPF `secret` hits are treated as high severity (regex missed them but
     # OPF says they're credentials → human review, not auto-approved).
     high_overall = server_high or opf_high
-    sanitization_status = (
-        "human_review" if high_overall else ("flagged" if redactions else "done")
-    )
+    if defer_opf:
+        # Layer 1 done, OPF deferred to background backfill. Don't claim
+        # 'done' since the heavier privacy pass hasn't run yet.
+        sanitization_status = "layer1_only"
+    else:
+        sanitization_status = (
+            "human_review" if high_overall else ("flagged" if redactions else "done")
+        )
     review_status = "pending" if high_overall else "auto_approved"
 
     eid = str(uuid.uuid4())
@@ -418,6 +501,7 @@ def push_lite(
             encoding="utf-8",
         )
         trajectory_path = str(traj_file)
+    _mark("write_trajectory_file")
 
     conn.execute(
         """
@@ -438,17 +522,20 @@ def push_lite(
             "lite", trajectory_path,
         ),
     )
+    _mark("insert_experiences")
 
     # Single embedding over (intent + query). Steps and outcome are kept
     # in the row but not embedded separately in v0 — pure cosine over
     # this one vector is what search uses.
     text_to_embed = (card.intent + " " + card.query).strip() or card.outcome
     vec = embed(text_to_embed)
+    _mark("embed")
     payload = json.dumps({"task_type": card.task_type, "acl": acl})
     conn.execute(
         "INSERT OR REPLACE INTO vectors (experience_id, kind, payload, vector) VALUES (?, ?, ?, ?)",
         (eid, "intent", payload, to_blob(vec)),
     )
+    _mark("insert_vector")
 
     conn.execute(
         "INSERT INTO audit_log (actor, actor_kind, action, target_id, payload) VALUES (?, ?, ?, ?, ?)",
@@ -458,7 +545,9 @@ def push_lite(
                      "task_type": card.task_type,
                      "opf_status": opf_filter.status()})),
     )
+    _mark("insert_audit")
     conn.commit()
+    _mark("commit_main")
 
     # Record fingerprint + compute structural metrics + initial quality.
     # All defensive — wrap in try so a quality calc error never breaks push.
@@ -466,12 +555,24 @@ def push_lite(
         quality_mod.record_fingerprint(
             conn, fingerprint=fingerprint, experience_id=eid, agent_id=agent_id,
         )
+        _mark("record_fingerprint")
         quality_mod.attach_structural_metrics(
             conn, experience_id=eid, trajectory=cleaned_trajectory or trajectory,
         )
+        _mark("attach_struct")
         quality_mod.recompute_quality(conn, experience_id=eid)
+        _mark("recompute_quality")
     except Exception:
         pass
+    if _PROF:
+        # print to stderr; uvicorn surfaces it in server.log
+        import sys as _sys
+        prev = 0.0
+        lines = ["[push_lite profile]"]
+        for label, t in _ts:
+            lines.append(f"  +{(t-prev)*1000:7.1f}ms  @{t*1000:8.1f}ms  {label}")
+            prev = t
+        print("\n".join(lines), file=_sys.stderr, flush=True)
     return {
         "experience_id": eid,
         "review_status": review_status,

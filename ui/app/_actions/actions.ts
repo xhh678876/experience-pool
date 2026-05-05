@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/lib/db";
 import { actorString, getReviewerName } from "@/lib/auth";
+import { withBase } from "@/components/ui/link";
 
 type NoticeKind = "success" | "warn" | "danger";
 
@@ -30,7 +31,7 @@ function redirectWithNotice(
   const url = new URL(actionReturnTo(id, formData), "http://experience-pool.local");
   url.searchParams.set("notice", notice);
   url.searchParams.set("noticeKind", noticeKind);
-  redirect(`${url.pathname}${url.search}`);
+  redirect(withBase(`${url.pathname}${url.search}`));
 }
 
 function appendAudit(
@@ -203,5 +204,5 @@ export async function exportJsonAction(formData: FormData): Promise<void> {
   if (!id) return;
   // Server actions cannot return a file response directly here, so we redirect
   // to a streaming route that produces the export.
-  redirect(`/api/export/${encodeURIComponent(id)}`);
+  redirect(withBase(`/api/export/${encodeURIComponent(id)}`));
 }

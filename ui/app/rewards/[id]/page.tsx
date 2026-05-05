@@ -21,7 +21,7 @@ export default async function RewardDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const exp = getExperience(id);
+  const exp = await getExperience(id);
   if (!exp) notFound();
   const rewards = getTurnRewards(id);
 

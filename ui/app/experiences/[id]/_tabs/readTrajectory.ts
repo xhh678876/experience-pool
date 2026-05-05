@@ -12,7 +12,56 @@ export type TrajectoryRead = {
   bodyText: string | null;
   rawBodyText: string | null;
   error: string | null;
+  toolUsage: Record<string, number>;
 };
+
+function extractToolUsage(bodyText: string | null): Record<string, number> {
+  if (!bodyText) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return {};
+  }
+  let turns: unknown;
+  if (Array.isArray(parsed)) turns = parsed;
+  else if (parsed && typeof parsed === "object") {
+    const obj = parsed as Record<string, unknown>;
+    turns = obj.trajectory ?? obj.messages ?? obj.events;
+  }
+  if (!Array.isArray(turns)) return {};
+
+  const counts: Record<string, number> = {};
+  const bump = (name: string | undefined) => {
+    const k = (name && String(name).trim()) || "tool";
+    counts[k] = (counts[k] ?? 0) + 1;
+  };
+
+  for (const turn of turns) {
+    if (!turn || typeof turn !== "object") continue;
+    const t = turn as Record<string, unknown>;
+
+    const content = t.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (!block || typeof block !== "object") continue;
+        const b = block as Record<string, unknown>;
+        if (b.type === "tool_use") bump(b.name as string | undefined);
+      }
+    }
+
+    const toolCalls = t.tool_calls;
+    if (Array.isArray(toolCalls)) {
+      for (const tc of toolCalls) {
+        if (!tc || typeof tc !== "object") continue;
+        const c = tc as Record<string, unknown>;
+        const fn = (c.function ?? {}) as Record<string, unknown>;
+        bump((fn.name as string | undefined) ?? (c.name as string | undefined));
+      }
+    }
+  }
+  return counts;
+}
 
 function expandHome(p: string): string {
   return p.replace(/^~(?=$|\/|\\)/, os.homedir());
@@ -31,6 +80,7 @@ export async function readTrajectory(
       bodyText: null,
       rawBodyText: null,
       error: null,
+      toolUsage: {},
     };
   }
   const resolved = path.isAbsolute(trajectoryPath)
@@ -55,6 +105,7 @@ export async function readTrajectory(
       bodyText: null,
       rawBodyText: null,
       error: err instanceof Error ? err.message : String(err),
+      toolUsage: {},
     };
   }
 
@@ -93,5 +144,6 @@ export async function readTrajectory(
     bodyText,
     rawBodyText,
     error: null,
+    toolUsage: extractToolUsage(bodyText),
   };
 }

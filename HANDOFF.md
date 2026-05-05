@@ -2,7 +2,73 @@
 
 本文档汇总在创智 sii 平台 pod (`openclaw-xhh--54f30c688f96-vpqqe2elxl`, 10.244.66.195) 上完成的所有进度，方便迁移到公网服务器继续开发。
 
-最后更新: 2026-05-02
+最后更新: 2026-05-03（追加 expool.clawsii.com 全套客户端 + daemon-tick 自动同步）
+
+---
+
+## 0. 2026-05-03 增量：完整客户端 + 自动 daemon
+
+从 `expool.clawsii.com` 镜像了完整客户端套件，已经放进 `dist/claude-skill/`，对端只要一行命令就能装上：
+
+```
+curl -sSL https://<your-domain>/install.sh | bash
+```
+
+**新加的文件：**
+
+| 文件 | 大小 | 作用 |
+|---|---|---|
+| `dist/claude-skill/scripts/install.sh` | 11 KB | 一键 installer：装 uploader、注册 agent、patch Claude Code hooks、装 systemd/launchd 守护 |
+| `dist/claude-skill/exp_uploader.py` | 110 KB | 完整客户端：含 9 个 adapter（Claude Code/Cursor/Hermes/Codex/Continue/Aider/AgentsChat/OpenInterpreter/Generic）|
+| `dist/claude-skill/exp_annotator.py` | 23 KB | 离线 LLM judge（5 维 reward + summary） |
+| `dist/claude-skill/session_start.sh` | 2.5 KB | Claude Code SessionStart hook，注入 `[task-summary]:` 自标签约定 |
+
+**uploader 子命令全集（直接 `python3 exp_uploader.py --help`）：**
+
+```
+register             注册 + 凭据落本机
+list-sessions        列本机某个 source 的 session
+push                 上传一条
+push-latest          --source claude-code 找最新一条 push
+push-all             批量推某 source 全部
+push-file            指定 trajectory.json 推
+export               不走服务端，导出 IR JSONL
+annotate-existing    给已上传的 trace 跑 LLM judge 并 POST rewards
+get-rewards          拉回 rewards
+daemon-tick          一次性增量同步（cron / launchd / systemd 调）
+daemon-state         看每个 source 上次同步到哪
+daemon-reset         清掉记忆，下次 tick 重扫
+```
+
+**uploader 找的本地 trace 路径：**
+
+```
+Claude Code:    ~/.claude/projects/*/<sid>.jsonl
+Cursor:         ~/Library/Application Support/Cursor/User/{global,workspace}Storage/state.vscdb
+Codex:          ~/.codex/sessions/.../*.jsonl
+Continue.dev:   ~/.continue/sessions/*.json
+Aider:          .aider.chat.history.md (cwd)
+Hermes / AgentsChat / OpenInterpreter: 见 exp_uploader.py 各 Adapter 类
+```
+
+**为对接它们，新增的后端：**
+
+| 端点 | 文件 | 备注 |
+|---|---|---|
+| `POST /v1/lite/rewards` | `core/exp_core/server.py` + `lite_rewards.py`（新文件）| 接受 per-turn reward 数组，scope by judge_model |
+| `GET /v1/lite/rewards/{eid}` | 同上 | 拉回 rewards |
+| `lite_rewards` 表（自动建） | `lite_rewards.py:ensure_schema()` | 不动 schema.py，首次访问时建 |
+
+**端到端验证（已跑通）：**
+
+1. `python3 exp_uploader.py register` → 凭据落到 `~/.experience-pool/credentials/<name>.json`
+2. `push-file` 一条多轮 → DB 里多 1 条，trajectory 完整
+3. `daemon-tick --dry-run` 自动发现 10 条 Claude Code 会话（含 683 turn 的本会话）+ 6 条 Codex
+4. `POST /v1/lite/rewards` + `GET /v1/lite/rewards/<eid>` 双向通
+
+**SessionStart hook 的厉害之处：**
+
+它注入一段 system 提示让 agent 自己在每个子任务结束时输出 `[task-summary]: <一句话>`，uploader 直接拿来作为 intent 字段。**零额外推理成本**——比我们 rule-based 拍前 120 字漂亮太多。
 
 ---
 
@@ -216,9 +282,27 @@ X-Signature  = hex(hmac_sha256(secret, canonical))
 
 ---
 
-## 五、对端怎么上传（三种姿势）
+## 五、对端怎么上传（四种姿势，新加 ★ 推荐）
 
-### 姿势 A — 单文件 `upload.py`（推荐）
+### ★ 姿势 0 — `curl ... | bash` 一行装全套（最优）
+
+```bash
+curl -sSL https://<your-domain>/install.sh | bash
+# 或带参数
+curl -sSL https://<your-domain>/install.sh | EXP_AGENT_NAME=alice EXP_TEAM=platform bash
+```
+
+完成后：
+- `~/.experience-pool/bin/exp` 二进制 wrapper
+- `~/.experience-pool/credentials/<name>.json` HMAC 凭据
+- Claude Code 的 `Stop` + `SessionStart` hook 已写进 `~/.claude/settings.json`
+- macOS launchd / Linux systemd 守护，每 120s 跑 `daemon-tick`，全自动同步本机所有 Claude/Cursor/Codex/... 会话
+
+`install.sh` 现在在 `dist/claude-skill/scripts/install.sh`，部署到公网时用 nginx/Caddy 把它 expose 在 `/install.sh` 就行。
+
+---
+
+### 姿势 A — 单文件 `upload.py`（次推荐，零依赖）
 
 ```bash
 # 一次性

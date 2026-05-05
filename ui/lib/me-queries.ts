@@ -35,18 +35,38 @@ export interface OwnerQuota {
   hint: string;
 }
 
+export interface MyExperienceStats {
+  total: number;
+  live: number;
+  revoked: number;
+  published: number;
+}
+
 const COMMUNITY_THRESHOLD = 3;
+
+function resolveOwner(db: ReturnType<typeof getDb>, viewerName: string): string {
+  return (
+    (db
+      .prepare("SELECT COALESCE(owner, name) AS owner FROM agents WHERE name = ?")
+      .get(viewerName) as { owner: string } | undefined)?.owner ?? viewerName
+  );
+}
 
 export async function getOwnerQuota(viewerName: string): Promise<OwnerQuota> {
   const db = getDb();
-  const owner =
-    (db
-      .prepare("SELECT COALESCE(owner, name) AS owner FROM agents WHERE name = ?")
-      .get(viewerName) as { owner: string } | undefined)?.owner ?? viewerName;
+  const owner = resolveOwner(db, viewerName);
 
-  // READ-ONLY: do NOT INSERT here — it caused SQLITE_BUSY contention with
-  // the api process under concurrent quota bumps. The api side creates
-  // the row on first publish; if it's missing on read, treat as 0.
+  // Lazy-create quota row. The FastAPI server (port 8081) writes the same
+  // pool.db; if it holds the writer lock, our INSERT can SQLITE_BUSY-fail.
+  // Treat that as benign: the row will get created server-side at first
+  // publish anyway, and the SELECT below will return undefined → 0 quota.
+  try {
+    db.prepare("INSERT OR IGNORE INTO owner_quotas (owner) VALUES (?)").run(owner);
+  } catch (e: unknown) {
+    const code = (e as { code?: string } | null)?.code;
+    if (code !== "SQLITE_BUSY" && code !== "SQLITE_LOCKED") throw e;
+    // else: skip — read-only fallback
+  }
   const row = db
     .prepare(
       "SELECT publish_count FROM owner_quotas WHERE owner = ?"
@@ -65,6 +85,43 @@ export async function getOwnerQuota(viewerName: string): Promise<OwnerQuota> {
   };
 }
 
+export async function getMyExperienceStats(
+  viewerName: string
+): Promise<MyExperienceStats> {
+  const db = getDb();
+  const owner = resolveOwner(db, viewerName);
+  const row = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN COALESCE(e.revoked, 0) = 0 THEN 1 ELSE 0 END) AS live,
+        SUM(CASE WHEN COALESCE(e.revoked, 0) = 1 THEN 1 ELSE 0 END) AS revoked,
+        SUM(CASE
+          WHEN COALESCE(e.revoked, 0) = 0
+           AND COALESCE(e.publish_status, 'private') = 'published'
+          THEN 1 ELSE 0 END) AS published
+      FROM experiences e
+      JOIN agents a USING(agent_id)
+      WHERE (a.owner = ? OR (a.owner IS NULL AND a.name = ?))
+      `
+    )
+    .get(owner, owner) as
+    | {
+        total: number | null;
+        live: number | null;
+        revoked: number | null;
+        published: number | null;
+      }
+    | undefined;
+  return {
+    total: row?.total ?? 0,
+    live: row?.live ?? 0,
+    revoked: row?.revoked ?? 0,
+    published: row?.published ?? 0,
+  };
+}
+
 export interface RevokeResult {
   ok: boolean;
   experience_id: string;
@@ -79,18 +136,16 @@ export interface RevokeResult {
  */
 export async function listMyExperiences(
   viewerName: string,
-  options: { includeRevoked?: boolean; limit?: number } = {}
+  options: { includeRevoked?: boolean; limit?: number; offset?: number } = {}
 ): Promise<MyExperienceRow[]> {
   const db = getDb();
   const includeRevoked = options.includeRevoked ?? false;
   const limit = Math.max(1, Math.min(options.limit ?? 200, 1000));
+  const offset = Math.max(0, options.offset ?? 0);
 
   // Multi-agent personal pool: list every experience whose agent.owner
   // matches the viewer's owner.
-  const ownerRow = db
-    .prepare("SELECT COALESCE(owner, name) AS owner FROM agents WHERE name = ?")
-    .get(viewerName) as { owner: string } | undefined;
-  const owner = ownerRow?.owner ?? viewerName;
+  const owner = resolveOwner(db, viewerName);
 
   const rows = db
     .prepare(
@@ -126,10 +181,10 @@ export async function listMyExperiences(
       WHERE (a.owner = ? OR (a.owner IS NULL AND a.name = ?))
         ${includeRevoked ? "" : "AND COALESCE(e.revoked, 0) = 0"}
       ORDER BY e.created_at DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
       `
     )
-    .all(owner, owner, limit) as MyExperienceRow[];
+    .all(owner, owner, limit, offset) as MyExperienceRow[];
   return rows;
 }
 
