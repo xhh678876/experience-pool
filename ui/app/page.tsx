@@ -32,9 +32,12 @@ import { formatDate, sensitivityColor, shortId } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
+// 默认指向 portal /me 复制完整 bind 命令(含 secret + proxy URL)。
+// 通过 EXP_INSTALL_CMD 可以注入完整 curl 形式给"看一眼就懂"的 demo 用,
+// 但 production 应该让用户走 /me 拷贝带 secret 的版本。
 const INSTALL_CMD =
   process.env.EXP_INSTALL_CMD ??
-  "curl -sSL http://10.244.66.195:8081/install | bash";
+  "(到 portal /me 页拷贝带 secret 的 bind 命令,不要使用 pod IP)";
 
 const SAMPLE_QUERIES = [
   "Caddy ACME 证书签发",

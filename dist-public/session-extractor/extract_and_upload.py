@@ -10,7 +10,7 @@ by this tool are NEVER visible to anyone but the owner.
 Usage:
     EXP_AGENT_NAME='user-xxx' \\
     EXP_AGENT_SECRET='<hex>' \\
-    EXP_BASE_URL='http://10.244.66.195:3080' \\
+    EXP_BASE_URL='<portal /me 给的 vscode notebook proxy URL>' \\
     python3 extract_and_upload.py [options]
 
 Options:
