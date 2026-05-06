@@ -44,7 +44,9 @@ import hmac
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -358,18 +360,33 @@ class ClaudeCodeAdapter:
                 content = msg.get("content", [])
                 if isinstance(content, list):
                     text_parts: list[str] = []
+                    thinking_parts: list[str] = []
                     tool_calls: list[dict[str, Any]] = []
                     for block in content:
                         if not isinstance(block, dict):
                             continue
-                        if block.get("type") == "text":
+                        bt = block.get("type")
+                        if bt == "text":
                             text_parts.append(block.get("text", ""))
-                        elif block.get("type") == "tool_use":
+                        elif bt == "thinking":
+                            # keep the readable text, drop opaque base64 signature
+                            tk = block.get("thinking") or ""
+                            if tk:
+                                thinking_parts.append(tk)
+                        elif bt == "tool_use":
                             tool_calls.append({
                                 "id": block.get("id", ""),
                                 "name": block.get("name", ""),
                                 "input": block.get("input", {}),
                             })
+                    # Emit thinking blocks as their own assistant turns so the
+                    # UI renders them in dedicated thinking-styled bubbles.
+                    for tk in thinking_parts:
+                        turns.append(Turn(
+                            role="assistant",
+                            content="💭 思考\n\n" + tk,
+                            ts=ts,
+                        ))
                     text = "\n".join(p for p in text_parts if p.strip())
                     if text or tool_calls:
                         turns.append(Turn(
@@ -1094,55 +1111,157 @@ class CodexAdapter:
     def parse(cls, ident: str) -> Session:
         p = Path(ident).expanduser()
         if not p.is_file():
-            for f in cls.root().rglob(f"{ident}*"):
+            # rglob can't handle absolute paths — strip to basename for lookup
+            stem = Path(ident).name
+            for f in cls.root().rglob(f"{stem}*"):
                 p = f
                 break
         if not p.is_file():
             raise FileNotFoundError(f"codex session not found: {ident}")
         turns: list[Turn] = []
         text = p.read_text(encoding="utf-8")
-        # Try JSONL first, fall back to single JSON object.
-        records: list[dict[str, Any]] = []
+        # Codex rollouts are JSONL — each line is `{type, payload}`. We use
+        # `response_item` records as the source of truth (event_msg lines
+        # duplicate the same content) and emit one turn per logical block:
+        # message text, reasoning (thinking), function_call (tool_use),
+        # function_call_output (tool_result).
+        role_norm = {"developer": "system", "tool": "tool"}
+        model = ""
+        started_at = ""
+        ended_at = ""
+        cwd = ""
+
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                obj = json.loads(line)
-                if isinstance(obj, dict):
-                    records.append(obj)
+                d = json.loads(line)
             except json.JSONDecodeError:
-                records = []
-                break
-        if not records:
-            try:
-                obj = json.loads(text)
-                if isinstance(obj, dict):
-                    records = obj.get("messages") or obj.get("turns") or [obj]
-            except json.JSONDecodeError:
-                pass
-        model = ""
-        for rec in records:
-            role = rec.get("role") or rec.get("type") or ""
-            content = rec.get("content") or rec.get("text") or rec.get("message", "")
-            if isinstance(content, list):
-                content = "\n".join(
-                    str(b.get("text", "")) for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
-            if not isinstance(content, str):
-                content = json.dumps(content, ensure_ascii=False)
-            if role and content.strip():
-                turns.append(Turn(role=role, content=content))
-            if not model and rec.get("model"):
-                model = rec["model"]
+                continue
+            if not isinstance(d, dict):
+                continue
+            ts = d.get("timestamp", "") or d.get("ended_at", "")
+            if ts:
+                if not started_at:
+                    started_at = ts
+                ended_at = ts
+            if d.get("type") == "session_meta":
+                meta_payload = d.get("payload") or {}
+                if isinstance(meta_payload, dict):
+                    model = model or meta_payload.get("model", "")
+                    cwd = cwd or meta_payload.get("cwd", "")
+
+            # legacy direct {role, content} fallback
+            if "role" in d and "content" in d:
+                role = role_norm.get(d.get("role"), d.get("role"))
+                content = d.get("content")
+                if isinstance(content, list):
+                    parts = [
+                        str(b.get("text", ""))
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") in ("text", "input_text", "output_text")
+                    ]
+                    content = "\n".join(parts)
+                if role in ("user", "assistant", "system", "tool") and isinstance(content, str) and content.strip():
+                    turns.append(Turn(role=role, content=content, ts=ts))
+                continue
+
+            if d.get("type") != "response_item":
+                continue
+            payload = d.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            ptype = payload.get("type")
+
+            if ptype == "message":
+                role = role_norm.get(payload.get("role"), payload.get("role"))
+                if role not in ("user", "assistant", "system", "tool"):
+                    continue
+                content = payload.get("content", "")
+                text_parts: list[str] = []
+                if isinstance(content, str):
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for c in content:
+                        if not isinstance(c, dict):
+                            continue
+                        if c.get("type") in ("input_text", "output_text", "text"):
+                            text_parts.append(c.get("text", "") or "")
+                merged = "\n".join(p for p in text_parts if p.strip())
+                if merged.strip():
+                    turns.append(Turn(role=role, content=merged, ts=ts))
+
+            elif ptype == "reasoning":
+                # `summary` is human-readable thinking text; `encrypted_content`
+                # is opaque base64 — drop it.
+                summ = payload.get("summary") or []
+                parts = []
+                if isinstance(summ, list):
+                    for s in summ:
+                        if isinstance(s, dict):
+                            t_ = s.get("text") or ""
+                            if t_.strip():
+                                parts.append(t_)
+                        elif isinstance(s, str) and s.strip():
+                            parts.append(s)
+                inline = payload.get("content")
+                if isinstance(inline, str) and inline.strip():
+                    parts.append(inline)
+                if parts:
+                    turns.append(Turn(
+                        role="assistant",
+                        content="💭 思考\n\n" + "\n\n".join(parts),
+                        ts=ts,
+                    ))
+
+            elif ptype == "function_call":
+                name = payload.get("name", "tool")
+                args_raw = payload.get("arguments", "")
+                try:
+                    args_obj = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                except Exception:
+                    args_obj = args_raw
+                turns.append(Turn(
+                    role="assistant",
+                    content="",
+                    ts=ts,
+                    tool_calls=[{
+                        "id": payload.get("call_id", ""),
+                        "name": name,
+                        "input": args_obj,
+                    }],
+                ))
+
+            elif ptype == "function_call_output":
+                output = payload.get("output", "")
+                disp = output
+                if isinstance(output, str):
+                    try:
+                        parsed = json.loads(output)
+                        if isinstance(parsed, dict):
+                            if "output" in parsed:
+                                disp = parsed["output"]
+                            elif "content" in parsed:
+                                disp = parsed["content"]
+                    except Exception:
+                        pass
+                if not isinstance(disp, str):
+                    disp = json.dumps(disp, ensure_ascii=False)
+                turns.append(Turn(
+                    role="tool",
+                    content=disp,
+                    ts=ts,
+                    tool_result_for=payload.get("call_id", ""),
+                ))
+
         return Session(
             agent_type=cls.name,
             session_id=p.stem,
-            started_at="",
-            ended_at=_dt.datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
+            started_at=started_at,
+            ended_at=ended_at or _dt.datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
             model=model or "codex-unknown",
-            cwd=str(p.parent),
+            cwd=cwd or str(p.parent),
             agent_version="",
             trajectory=turns,
             extra={"source_path": str(p)},
@@ -1428,28 +1547,9 @@ def _adapter_latest_path_or_id(src: str) -> str:
 # Lite-card builder (matches cli/src/lite.ts shape).
 # ---------------------------------------------------------------------------
 
-_TASK_SUMMARY_RE = re.compile(r"(?im)^\s*\[task-summary\]\s*[:：]\s*(.+?)\s*$")
-
-
-def _extract_task_summary_title(trajectory: list[dict[str, Any]]) -> str:
-    for t in reversed(trajectory):
-        content = str(t.get("content") or "")
-        matches = _TASK_SUMMARY_RE.findall(content)
-        if not matches:
-            continue
-        label = " ".join(matches[-1].strip().split())
-        label = label.strip('"\'`「」『』').strip()
-        if label.endswith(("。", ".", "!", "?", "！", "？", ":", "：")):
-            label = label[:-1].strip()
-        if label and not label.lower().startswith((
-            "waiting", "looking", "based on", "i ", "i'", "the ", "<",
-            "我需要", "我看到", "根据", "请确认",
-        )):
-            return label[:60] + ("…" if len(label) > 60 else "")
-    return ""
-
-
 def _derive_title_heuristic(query: str) -> str:
+    """Fallback title from first user message — used if LLM refine is off
+    or fails. Kept as a separate function so the LLM path can wrap it."""
     text = (query or "").strip()
     line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     if not line:
@@ -1465,6 +1565,215 @@ def _derive_title_heuristic(query: str) -> str:
     if len(title) > 70:
         title = title[:69].rstrip() + "…"
     return title or "unspecified task"
+
+
+_TITLE_SYSTEM = (
+    "你是「会话标题」生成器。给定一段 agent 对话 transcript,输出一行简短标题。\n"
+    "\n"
+    "格式硬要求(违反就算失败):\n"
+    "1. 只输出一行,绝不换行,不分段\n"
+    "2. 中文 ≤25 字,英文 ≤8 词\n"
+    "3. 用「动词 + 对象」结构(如 `部署 OPF 服务`、`Refactor login flow`)\n"
+    "4. 标题语言匹配用户语言\n"
+    "5. 不要任何 markdown/引号/句末标点/emoji\n"
+    "6. 不要任何对话性、解释性、第一人称、提问语句\n"
+    "7. 全是闲聊就输出:(闲聊)\n"
+    "\n"
+    "✅ 正确示范:\n"
+    "  部署 OPF 服务到独立 GPU 机器\n"
+    "  修复 push 慢的瓶颈\n"
+    "  配置 Claude Code 状态栏\n"
+    "  Refactor login flow\n"
+    "  Diagnose proxy connectivity issue\n"
+    "\n"
+    "❌ 错误示范(绝对不允许):\n"
+    "  Waiting for your approval to write…\n"
+    "  我需要澄清一下\n"
+    "  I'll extract this trajectory\n"
+    "  The transcript is truncated\n"
+    "  <transcript>\n"
+    "  Looking at this conversation\n"
+    "  📥 connected to experience pool\n"
+    "\n"
+    "**只输出标题那一行,前后无任何额外文字。**"
+)
+
+
+# Post-LLM filter: reject the response and fall back to heuristic if the
+# label looks like model rambling (conversational opener, English filler,
+# echoed input markers, etc).
+_BAD_TITLE_PREFIXES = (
+    "<", "[", "(", "the ", "i ", "i'", "it ", "it'", "let ", "let's", "we ", "we'",
+    "looking", "let me", "sure", "okay", "ok,", "hi,", "hi!", "hello",
+    "yes,", "no,", "sorry", "waiting", "based on", "from the",
+    "我需要", "我看到", "我注意", "我会", "这段", "这个", "这是", "这条",
+    "看起来", "根据", "请告诉", "请提供", "你好",
+)
+_BAD_TITLE_SUBSTRINGS = (
+    "approval", "permission", "transcript", "got cut off", "truncated",
+    "incomplete", "could you clarify", "what would you", "what can i",
+    "请确认", "需要确认", "需要权限", "请提供更多",
+)
+
+
+def _looks_bad_title(label: str) -> bool:
+    if not label:
+        return True
+    if label == "(闲聊)":
+        return False
+    low = label.lower().strip()
+    if low.startswith(_BAD_TITLE_PREFIXES):
+        return True
+    if any(s in low for s in _BAD_TITLE_SUBSTRINGS):
+        return True
+    # Ends with ellipsis → was a wrapped sentence, not a title
+    if label.endswith(("…", "...")):
+        return True
+    return False
+
+
+def _pack_transcript(trajectory: list[Any], max_chars: int = 6000) -> str:
+    out: list[str] = []
+    used = 0
+    for t in trajectory:
+        role = getattr(t, "role", None) or t.get("role", "")
+        content = (getattr(t, "content", None) or t.get("content", "") or "").strip()
+        tcs = getattr(t, "tool_calls", None) or t.get("tool_calls") or []
+        if not content and not tcs:
+            continue
+        if role == "user":
+            line = f"[用户] {content[:600]}"
+        elif role == "assistant":
+            if tcs:
+                names = ", ".join(str(tc.get("name", "?")) for tc in tcs)
+                line = f"[助手→工具] {names}"
+            else:
+                line = f"[助手] {content[:600]}"
+        elif role == "tool":
+            preview = content[:120].replace("\n", " ")
+            line = f"[工具结果] {preview}{'…' if len(content) > 120 else ''}"
+        else:
+            continue
+        if used + len(line) > max_chars:
+            out.append("...(truncated)")
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
+
+
+def _llm_summarize_title(trajectory: list[Any], timeout: int = 45) -> str | None:
+    """Shell out to local `claude -p` to get a one-line title that
+    summarises the WHOLE conversation. Returns None on any failure so the
+    caller falls back to the heuristic.
+
+    Disabled when EXP_REFINE_TITLES != "1" or claude CLI unavailable.
+    """
+    if os.environ.get("EXP_REFINE_TITLES", "1") != "1":
+        return None
+    if os.environ.get("EXP_TITLE_DISABLE", "0") == "1":
+        return None
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return None
+    try:
+        transcript = _pack_transcript(trajectory)
+        if not transcript.strip():
+            return None
+        model = os.environ.get("EXP_TITLE_MODEL", "claude-haiku-4-5-20251001")
+        # Critical: disable auto-upload + skip session-start in the spawned
+        # claude subprocess. Otherwise its SessionEnd hook fires and calls
+        # `exp push-latest` again → infinite recursion (push spawns title,
+        # title spawns claude, claude spawns push, …).
+        env = dict(os.environ)
+        env["EXP_AUTO_UPLOAD"] = "0"
+        env["EXP_REFINE_TITLES"] = "0"
+        env["EXP_TITLE_DISABLE"] = "1"
+        proc = subprocess.run(
+            [
+                claude_bin, "-p", "--output-format", "json",
+                "--model", model,
+                "--append-system-prompt", _TITLE_SYSTEM,
+                # don't write a session file to ~/.claude/projects/ —
+                # otherwise daemon-tick picks it up as a new "session"
+                # and uploads it (with title `<transcript>` etc.)
+                "--no-session-persistence",
+                "--disable-slash-commands",
+            ],
+            input=f"<transcript>\n{transcript}\n</transcript>",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+            cwd="/tmp",
+        )
+        if proc.returncode != 0:
+            return None
+        env = json.loads(proc.stdout)
+        if env.get("is_error"):
+            return None
+        raw = (env.get("result") or "").strip()
+        # Strip leading hook-injected "📥 connected to experience pool …"
+        # lines and other auto-prepended notices.
+        lines = [ln.strip() for ln in raw.splitlines()]
+        while lines and (
+            not lines[0]
+            or lines[0].startswith("📥")
+            or "connected to experience pool" in lines[0].lower()
+            or lines[0].startswith("[task-summary]")
+            or lines[0].startswith("📤 uploaded")
+        ):
+            lines.pop(0)
+        label = lines[0] if lines else ""
+        label = label.lstrip("-•*0123456789. ").strip()
+        label = label.strip('"\'`「」『』').strip()
+        if label.endswith(("。", ".", "!", "?", "！", "？", ":", "：")):
+            label = label[:-1]
+        label = " ".join(label.split())
+        if not label or label.lower() in ("(no task)", "(none)"):
+            return None
+        if _looks_bad_title(label):
+            return None
+        if len(label) > 60:
+            label = label[:59] + "…"
+        return label
+    except Exception:
+        return None
+
+
+def _derive_title(query: str, trajectory: list[Any] | None = None) -> str:
+    """Return an LLM-summarised title when possible, else the heuristic."""
+    fallback = _derive_title_heuristic(query)
+    if not trajectory:
+        return fallback
+    llm = _llm_summarize_title(trajectory)
+    return llm or fallback
+
+
+_TASK_SUMMARY_RE = re.compile(r"(?im)^\s*\[task-summary\]\s*[:：]\s*(.+?)\s*$")
+
+
+def _extract_task_summary_title(trajectory: list[Any]) -> str:
+    """Prefer the explicit task-summary marker when the agent emitted one.
+
+    This keeps titles useful even when the LLM title pass is disabled, rate
+    limited, or unavailable.
+    """
+    for t in reversed(trajectory):
+        content = getattr(t, "content", None) or t.get("content", "") or ""
+        if not content:
+            continue
+        matches = _TASK_SUMMARY_RE.findall(str(content))
+        if not matches:
+            continue
+        label = " ".join(matches[-1].strip().split())
+        label = label.strip('"\'`「」『』').strip()
+        if label.endswith(("。", ".", "!", "?", "！", "？", ":", "：")):
+            label = label[:-1].strip()
+        if label and not _looks_bad_title(label):
+            return label[:60] + ("…" if len(label) > 60 else "")
+    return ""
 
 
 def build_lite_card(
@@ -1496,13 +1805,23 @@ def build_lite_card(
             "tool_calls": clean_tool_calls,
             "tool_result_for": t.tool_result_for,
         })
-        if t.role == "user" and not query and body.strip():
+        if (
+            t.role == "user"
+            and not query
+            and body.strip()
+            and not body.lstrip().startswith((
+                "<environment_context>",
+                "<local-command-caveat>",
+                "<command-message>",
+                "<command-name>",
+            ))
+        ):
             query = body
         elif t.role == "assistant" and body.strip():
             steps.append(body[:280])
             outcome = body
 
-    intent = _extract_task_summary_title(sanitized_traj) or _derive_title_heuristic(query)
+    intent = _extract_task_summary_title(sanitized_traj) or _derive_title(query, sanitized_traj)
     return {
         "card": {
             "query": query or "(no user turn)",
@@ -1819,6 +2138,223 @@ def cmd_unpublish(args: argparse.Namespace) -> int:
     )
     print(json.dumps(res, indent=2, ensure_ascii=False))
     return 0 if res.get("ok") else 1
+
+
+# ---------------------------------------------------------------------------
+# Reading-side commands — these are the API surface every plugin needs.
+# CLI 包装的设计目标:让插件 / 外部脚本不必直连 HTTP + HMAC,只用一行
+# `exp <verb> --json` 就能拿到结构化结果。
+# ---------------------------------------------------------------------------
+
+def cmd_search(args: argparse.Namespace) -> int:
+    """POST /v1/lite/search — 语义搜索经验池。
+
+    给定 query 文本, 服务端按 (intent + query) 的向量做余弦 top-k, 按
+    viewer 身份做 ACL 过滤, 返回 personal + community 两段结果。
+
+    用法 (插件调用最多的命令):
+        exp search --q "FastAPI HMAC 签名失败" --top-k 5
+        exp search --q "..." --scope personal --json   # 只看自己
+        exp search --q "..." --scope community --json  # 只看 community
+    """
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found. run `exp register` or bind first.")
+    body = {"q": args.q, "top_k": args.top_k, "scope": args.scope}
+    if args.task_type:
+        body["task_type"] = args.task_type
+    res = http_request(args.base, "POST", "/v1/lite/search", body=body, cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    # 人类可读输出
+    results = res.get("results") or []
+    if not results:
+        print("(no matches)")
+        return 0
+    for i, r in enumerate(results, 1):
+        sim = r.get("similarity", 0)
+        src = r.get("source", "?")
+        eid = (r.get("experience_id") or "")[:8]
+        intent = r.get("intent") or r.get("query") or "(no intent)"
+        print(f"{i:2}. [{src:8}] {eid}  sim={sim:.2f}  {intent[:80]}")
+        steps = r.get("steps") or []
+        for s in steps[:2]:
+            print(f"      • {s[:90]}")
+        if len(steps) > 2:
+            print(f"      • ...({len(steps)-2} more steps)")
+    quota = res.get("quota") or {}
+    if quota.get("community_locked_hint"):
+        print(f"\n  ℹ {quota.get('hint','')}")
+    return 0
+
+
+def cmd_get(args: argparse.Namespace) -> int:
+    """GET /v1/experiences/{eid} — 拿单条经验的卡片(可选含完整 trajectory)。
+
+    主要给 search 之后的 follow-up 用:用户挑了一条, 插件需要把完整
+    steps / trajectory 显示出来。
+    """
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found.")
+    path = f"/v1/experiences/{args.eid}"
+    if args.include_trajectory:
+        path += "?include_trajectory=1"
+    res = http_request(args.base, "GET", path, cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    print(f"experience_id : {res.get('experience_id')}")
+    print(f"task_type     : {res.get('task_type')}")
+    print(f"intent        : {res.get('intent_text') or res.get('intent')}")
+    print(f"acl           : {res.get('acl')}")
+    print(f"created_at    : {res.get('created_at')}")
+    print(f"turn_count    : {res.get('turn_count', '?')}")
+    print(f"\n[query]\n{res.get('query','')}")
+    print(f"\n[outcome]\n{res.get('outcome','')}")
+    steps = res.get('steps') or res.get('script_steps') or []
+    if isinstance(steps, str):
+        try:
+            steps = json.loads(steps)
+        except Exception:
+            steps = [steps]
+    if steps:
+        print("\n[steps]")
+        for s in steps:
+            print(f"  • {s}")
+    if args.include_trajectory and res.get("trajectory"):
+        print(f"\n[trajectory] ({len(res['trajectory'])} turns)")
+        for i, t in enumerate(res["trajectory"][:20]):
+            c = (t.get("content") or "")[:100].replace("\n", " ")
+            print(f"  [{i:3}] {t.get('role','?'):10} {c}")
+        if len(res["trajectory"]) > 20:
+            print(f"  ... ({len(res['trajectory']) - 20} more turns; --json to dump all)")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    """POST /v1/lite/search 但用空 q 拿 personal pool 全部 — 列出本人 row。
+
+    服务端没有 dedicated /v1/me/experiences,但 search 在空 query 时会
+    返回最近的全部 personal 行(按 created_at desc)。等价于 /me 页内容。
+    """
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found.")
+    body = {"q": "", "top_k": args.limit, "scope": "personal"}
+    res = http_request(args.base, "POST", "/v1/lite/search", body=body, cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    rows = res.get("personal") or res.get("results") or []
+    if not rows:
+        print("(empty pool)")
+        return 0
+    print(f"{'eid':10}  {'task':12}  {'turns':>5}  {'acl':8}  intent")
+    print("-" * 100)
+    for r in rows:
+        eid = (r.get("experience_id") or "")[:8]
+        task = (r.get("task_type") or "")[:12]
+        turns = r.get("turn_count") or "?"
+        acl = (r.get("acl") or "")[:8]
+        intent = (r.get("intent") or r.get("intent_text") or r.get("query") or "")[:60]
+        print(f"{eid:10}  {task:12}  {str(turns):>5}  {acl:8}  {intent}")
+    return 0
+
+
+def cmd_show_quota(args: argparse.Namespace) -> int:
+    """alias for `quota` 但可选 --json,给插件用"""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found.")
+    res = http_request(args.base, "GET", "/v1/me/quota", cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print(f"owner          : {res.get('owner')}")
+        print(f"publish_count  : {res.get('publish_count')}")
+        print(f"threshold      : {res.get('threshold')}")
+        print(f"unlocked       : {res.get('community_unlocked')}")
+        if res.get("hint"):
+            print(f"hint           : {res['hint']}")
+    return 0
+
+
+def cmd_skills_search(args: argparse.Namespace) -> int:
+    """GET /v1/skills/search — 在已 crystallize 的 skills 库里搜。
+
+    skill 是经验池高频经验被「结晶」出来的可复用模板。这个端点存在但
+    skills 功能还没全启用,主要返回空 list — 不用慌。
+    """
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found.")
+    qs = urllib.parse.urlencode({"q": args.q, "top_k": args.top_k})
+    res = http_request(args.base, "GET", f"/v1/skills/search?{qs}", cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    items = res.get("results") or []
+    if not items:
+        print("(no skills matched)")
+        return 0
+    for i, s in enumerate(items, 1):
+        print(f"{i:2}. {s.get('name','?')}  v{s.get('version','?')}")
+        print(f"      {(s.get('description') or '')[:100]}")
+    return 0
+
+
+def cmd_skills_install(args: argparse.Namespace) -> int:
+    """GET /v1/skills/install?name=X — 拉一个 skill 的 SKILL.md/scripts。
+
+    返回 tarball / 内容,本地由 `--target` 决定写到哪。如果 server 端没
+    skills(MVP 阶段),返回 404,作为正常情况处理。
+    """
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found.")
+    qs = urllib.parse.urlencode({"name": args.name})
+    try:
+        res = http_request(args.base, "GET", f"/v1/skills/install?{qs}", cred=cred)
+    except SystemExit as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_opf_status(args: argparse.Namespace) -> int:
+    """GET /v1/admin/opf-status — 看 OPF 后台 worker 的状态(layer1_only
+    队列还有多少行待补、最近一次跑是什么时候)。运维向命令。"""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found.")
+    res = http_request(args.base, "GET", "/v1/admin/opf-status", cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_admin_dashboard(args: argparse.Namespace) -> int:
+    """GET /v1/admin/dashboard — 全局指标 (push 量 / 用户数 / 各 sanitize 状态计数)。"""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found.")
+    res = http_request(args.base, "GET", "/v1/admin/dashboard", cred=cred)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_revoke(args: argparse.Namespace) -> int:
+    """alias for `consent revoke` — 部分插件作者会 grep `revoke` 找命令,
+    给个直接的入口。"""
+    return cmd_consent_revoke(args)
 
 
 def cmd_consent_revoke(args: argparse.Namespace) -> int:
@@ -2297,6 +2833,20 @@ def cmd_daemon_tick(args: argparse.Namespace) -> int:
                 if not session.trajectory:
                     skipped += 1
                     continue
+                # Skip sessions that are obviously title-prober artifacts:
+                # any session whose first user message is our packed
+                # transcript wrapper (`<transcript>...`) is not a real
+                # user task — it's a self-call from the title summariser.
+                first_user = next(
+                    (t.content for t in session.trajectory if t.role == "user"),
+                    "",
+                )
+                if first_user.lstrip().startswith("<transcript>"):
+                    skipped += 1
+                    if args.verbose:
+                        print(f"[daemon] {src} {sid[:24]}: skipped (title-prober artifact)",
+                              file=sys.stderr)
+                    continue
                 if args.dry_run:
                     print(f"[dry-run] would upload {src}/{sid} ({len(session.trajectory)} turns)")
                 else:
@@ -2580,6 +3130,68 @@ def build_parser() -> argparse.ArgumentParser:
                              "(publish_count is NOT decremented)")
     sp.add_argument("--eid", required=True, help="experience_id to unpublish")
     sp.set_defaults(func=cmd_unpublish)
+
+    # ------------------------------------------------------------------
+    # 插件 / 下游开发友好的查询命令(都支持 --json 给脚本解析)
+    # ------------------------------------------------------------------
+    sp = sub.add_parser("search", help="语义搜索经验池 (插件主用)")
+    sp.add_argument("--q", required=True, help="查询文本")
+    sp.add_argument("--top-k", type=int, default=5)
+    sp.add_argument("--scope", default="auto",
+                    choices=["auto", "personal", "community"])
+    sp.add_argument("--task-type", default=None,
+                    help="只搜某 task_type 下的(可选)")
+    sp.add_argument("--json", action="store_true", help="JSON 输出便于脚本解析")
+    sp.set_defaults(func=cmd_search)
+
+    sp = sub.add_parser("get",
+                        help="拿单条经验的卡片 (search 之后 follow-up 用)")
+    sp.add_argument("--eid", required=True, help="experience_id")
+    sp.add_argument("--include-trajectory", action="store_true",
+                    help="同时返回完整 trajectory(气泡渲染所需)")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_get)
+
+    sp = sub.add_parser("list",
+                        help="列出本人 personal pool 全部经验 (等同 /me)")
+    sp.add_argument("--limit", type=int, default=50)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_list)
+
+    sp = sub.add_parser("ls",
+                        help="alias for `list`")
+    sp.add_argument("--limit", type=int, default=50)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_list)
+
+    sp = sub.add_parser("revoke",
+                        help="撤回一条经验 (alias for `consent revoke`)")
+    sp.add_argument("--eid", required=True)
+    sp.add_argument("--reason", default="user_request")
+    sp.set_defaults(func=cmd_revoke)
+
+    sp = sub.add_parser("skills-search",
+                        help="在已结晶的 skills 库里搜 (skills 功能 MVP 阶段)")
+    sp.add_argument("--q", required=True)
+    sp.add_argument("--top-k", type=int, default=5)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_skills_search)
+
+    sp = sub.add_parser("skills-install",
+                        help="按名字拉一个 skill 到本地 (--target 指目录)")
+    sp.add_argument("--name", required=True)
+    sp.add_argument("--target", default=None)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_skills_install)
+
+    sp = sub.add_parser("opf-status",
+                        help="看 OPF backfill worker 状态 (运维)")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_opf_status)
+
+    sp = sub.add_parser("dashboard",
+                        help="全局指标 (push 量 / 用户数 / sanitize 状态计数)")
+    sp.set_defaults(func=cmd_admin_dashboard)
 
     return p
 

@@ -195,6 +195,15 @@ export default async function MePage({ searchParams }: PageProps) {
                     <Badge variant="outline" className="font-mono">
                       {r.task_type}
                     </Badge>
+                    {r.turn_count && r.turn_count > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="font-mono text-[10px] text-muted-foreground"
+                        title="trajectory 总 turn 数 (user/assistant/tool 拆开计)"
+                      >
+                        {r.turn_count} turns
+                      </Badge>
+                    ) : null}
                     {!r.trajectory_path ? (
                       <Badge
                         variant="outline"

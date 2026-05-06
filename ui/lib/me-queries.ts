@@ -25,6 +25,8 @@ export interface MyExperienceRow {
   publish_status: string | null;
   published_at: string | null;
   strict_redactions: string | null;
+  session_id: string | null;
+  turn_count: number | null;
 }
 
 export interface OwnerQuota {
@@ -170,6 +172,8 @@ export async function listMyExperiences(
         COALESCE(e.publish_status, 'private') AS publish_status,
         e.published_at,
         e.strict_redactions,
+        e.session_id,
+        COALESCE(e.turn_count, 0) AS turn_count,
         (
           SELECT json_extract(payload, '$.redactions')
           FROM audit_log
@@ -179,6 +183,7 @@ export async function listMyExperiences(
       FROM experiences e
       JOIN agents a USING(agent_id)
       WHERE (a.owner = ? OR (a.owner IS NULL AND a.name = ?))
+        AND COALESCE(e.superseded, 0) = 0
         ${includeRevoked ? "" : "AND COALESCE(e.revoked, 0) = 0"}
       ORDER BY e.created_at DESC
       LIMIT ? OFFSET ?

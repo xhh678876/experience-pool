@@ -53,6 +53,16 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     # Owner = stable handle that groups multiple agents into one personal
     # pool. Existing rows back-fill owner = agents.name (1:1 isolation).
     ("agents",      "owner",              "TEXT"),
+    # Session-singleton dedup:同一 (agent_id, session_id) 上传多次时,
+    # 服务端原地 UPDATE 同一行,不再为每次快照新建 row。
+    #   session_id     — adapter 从 session 文件名提的 stable id;空值表示
+    #                    生成 trace 没有 session 概念(generic JSON / push-file)
+    #   turn_count     — trajectory 长度,UI 列表显示「N turns」用
+    #   superseded     — 被同 session 的更新版本顶替时标 1,等同软撤回:
+    #                    搜索/列表都过滤掉,UI 不显示
+    ("experiences", "session_id",         "TEXT"),
+    ("experiences", "turn_count",         "INTEGER NOT NULL DEFAULT 0"),
+    ("experiences", "superseded",         "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -73,6 +83,12 @@ def ensure_quality_columns(conn: sqlite3.Connection) -> None:
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_exp_fp ON experiences(content_fingerprint)"
+    )
+    # Session-singleton lookup:WHERE agent_id=? AND session_id=? AND superseded=0 AND revoked=0
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exp_session "
+        "ON experiences(agent_id, session_id) "
+        "WHERE session_id IS NOT NULL AND superseded=0 AND revoked=0"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_exp_publish ON experiences(publish_status)"

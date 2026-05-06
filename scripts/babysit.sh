@@ -29,9 +29,14 @@ log() { printf '[%s] %s\n' "$(date +%FT%T)" "$*" >>"$LOG"; }
 start_8081() {
     log "starting 8081 (FastAPI, --workers 4)"
     cd "$ROOT"
+    # NOTE: EXP_BIND_BASE_URL 是 portal /me 页 bind 命令里嵌入的 URL。
+    # 必须用「**所有目标用户的电脑都能访问**」的 URL,不能用 pod IP
+    # (10.244.66.195 是 k8s pod IP, 只有同 namespace 同 NetworkPolicy
+    # 的 pod 路由得到, 别的内网电脑打不开)。
+    # 当前用 sii vscode notebook proxy 暴露 3080 端口的固定外网 URL。
     EXP_AUTO_UPLOAD=1 EXP_LLM=mock EXP_RATE_LIMIT_ENABLED=0 \
     EXP_ROOT=/tmp/exp-mvp \
-    EXP_BIND_BASE_URL=http://10.244.66.195:3080 \
+    EXP_BIND_BASE_URL='https://nat2-notebook-inspire.sii.edu.cn/ws-0349f1f3-e433-45b7-a935-1dd1bfaf8f6b/project-969649d6-31b8-45af-b6ff-ffb85bbfb3c9/user-ef4936dd-0231-4485-ba30-34e92bf3ea53/vscode/6bf937f8-4826-43cd-b0f6-54f30c688f96/a5119654-19ab-4e0d-9527-bb73a246b9a8/proxy/3080' \
     EXP_DEFER_OPF=1 \
     nohup core/.venv/bin/uvicorn exp_core.server:app \
         --host 0.0.0.0 --port 8081 --app-dir core \

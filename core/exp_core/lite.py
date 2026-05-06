@@ -236,14 +236,70 @@ def push_lite(
     agent_id = row["agent_id"]
     _mark("agent_lookup")
 
-    # Idempotent push (Ultron-style). If this exact trajectory + agent has
-    # been pushed before, return the existing experience_id without writing
-    # a new row. Allows daemon-tick to safely re-attempt without polluting
-    # the pool.
+    # ── Dedup / 同 session 续传 ──────────────────────────────────────
+    # 优先级:
+    #   1. (agent_id, session_id):同一 session 多次 push,**原地 UPDATE
+    #      已有 row**(turn_count 增长就续写,等同就 dedup)。这让 SessionEnd
+    #      hook 在长会话里反复触发不会留一堆短快照,UI 上始终只看到一条
+    #      并随后续对话自动续传。
+    #   2. content_fingerprint:没有 session_id(generic JSON / push-file)
+    #      时退回到完全相同 trajectory 的去重。
+    #
+    # `meta.session_id` 由 adapter 提供(claude-code 是 .jsonl 的 stem,
+    #  codex 是 rollout 文件名等)。
+    session_id = None
+    if isinstance(meta, dict):
+        sid_raw = meta.get("session_id")
+        if isinstance(sid_raw, str) and sid_raw.strip():
+            session_id = sid_raw.strip()[:200]
+    new_turn_count = len(trajectory) if trajectory else 0
+
     from . import quality as quality_mod
     fingerprint = quality_mod.compute_fingerprint(trajectory)
     _mark("fingerprint")
-    if fingerprint:
+
+    # 路径 1:session-singleton update-in-place
+    if session_id:
+        existing_row = conn.execute(
+            """SELECT experience_id, turn_count, content_fingerprint
+               FROM experiences
+               WHERE agent_id = ? AND session_id = ?
+                 AND superseded = 0 AND revoked = 0
+               ORDER BY turn_count DESC LIMIT 1""",
+            (agent_id, session_id),
+        ).fetchone()
+        if existing_row is not None:
+            existing_eid = existing_row["experience_id"]
+            existing_count = existing_row["turn_count"] or 0
+            existing_fp = existing_row["content_fingerprint"]
+            # 比当前已存的更短或一样 → 直接 dedup,不动现有 row
+            if new_turn_count <= existing_count or fingerprint == existing_fp:
+                return {
+                    "experience_id": existing_eid,
+                    "duplicate_of": existing_eid,
+                    "fingerprint": fingerprint,
+                    "ingest_path": "lite-dup",
+                    "session_id": session_id,
+                    "turn_count": existing_count,
+                    "review_status": "auto_approved",
+                    "sanitization_status": "skipped",
+                    "redactions": {},
+                    "deduplicated_reason": (
+                        "shorter_or_equal" if new_turn_count <= existing_count
+                        else "same_fingerprint"
+                    ),
+                }
+            # 当前 push 比已存版本更长 → 标记走 update-in-place,继续走完
+            # 下面的脱敏 / 写文件流程,但最终不 INSERT 而是 UPDATE。
+            # 把 eid 暴露给后面的 INSERT/UPDATE 分叉用。
+            update_target_eid = existing_eid
+        else:
+            update_target_eid = None
+    else:
+        update_target_eid = None
+
+    # 路径 2:fingerprint 去重(没 session_id 或 session_id 这一支没命中)
+    if update_target_eid is None and fingerprint:
         existing = quality_mod.find_existing_by_fingerprint(
             conn, fingerprint=fingerprint, agent_id=agent_id,
         )
@@ -474,7 +530,9 @@ def push_lite(
         )
     review_status = "pending" if high_overall else "auto_approved"
 
-    eid = str(uuid.uuid4())
+    # 走 update-in-place 时复用旧 eid;新 row 才 mint 新 uuid
+    is_update = update_target_eid is not None
+    eid = update_target_eid if is_update else str(uuid.uuid4())
     acl = _normalize_acl(card.acl)
 
     trajectory_path: str | None = None
@@ -496,6 +554,7 @@ def push_lite(
             sidecar["tools"] = cleaned_tools
         if cleaned_meta is not None:
             sidecar["meta"] = cleaned_meta
+        # update 路径会原地覆盖文件,write_text 自然替换;无需先 unlink
         traj_file.write_text(
             json.dumps(sidecar, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -503,26 +562,56 @@ def push_lite(
         trajectory_path = str(traj_file)
     _mark("write_trajectory_file")
 
-    conn.execute(
-        """
-        INSERT INTO experiences (
-            experience_id, agent_id, task_type, source_model,
-            query, intent_text, script_steps, outcome, summary,
-            sensitivity, acl, tags,
-            sanitization_status, review_status, extraction_status,
-            ingest_path, trajectory_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            eid, agent_id, card.task_type, card.source_model,
-            card.query, card.intent, json.dumps(card.steps), card.outcome,
-            card.outcome,  # also fill summary so existing UI shows something
-            card.sensitivity, acl, json.dumps(card.tags),
-            sanitization_status, review_status, "done",
-            "lite", trajectory_path,
-        ),
-    )
-    _mark("insert_experiences")
+    if is_update:
+        # 同 session 续传:UPDATE 现有 row。保留 created_at / experience_id /
+        # publish_status,刷新 trajectory + 各字段。
+        conn.execute(
+            """
+            UPDATE experiences SET
+                task_type=?, source_model=?,
+                query=?, intent_text=?, script_steps=?, outcome=?, summary=?,
+                sensitivity=?, acl=?, tags=?,
+                sanitization_status=?, review_status=?, extraction_status=?,
+                trajectory_path=?,
+                turn_count=?,
+                content_fingerprint=?
+            WHERE experience_id=?
+            """,
+            (
+                card.task_type, card.source_model,
+                card.query, card.intent, json.dumps(card.steps), card.outcome,
+                card.outcome,
+                card.sensitivity, acl, json.dumps(card.tags),
+                sanitization_status, review_status, "done",
+                trajectory_path,
+                new_turn_count,
+                fingerprint,
+                eid,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO experiences (
+                experience_id, agent_id, task_type, source_model,
+                query, intent_text, script_steps, outcome, summary,
+                sensitivity, acl, tags,
+                sanitization_status, review_status, extraction_status,
+                ingest_path, trajectory_path,
+                session_id, turn_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                eid, agent_id, card.task_type, card.source_model,
+                card.query, card.intent, json.dumps(card.steps), card.outcome,
+                card.outcome,  # also fill summary so existing UI shows something
+                card.sensitivity, acl, json.dumps(card.tags),
+                sanitization_status, review_status, "done",
+                "lite", trajectory_path,
+                session_id, new_turn_count,
+            ),
+        )
+    _mark("insert_or_update_experiences")
 
     # Single embedding over (intent + query). Steps and outcome are kept
     # in the row but not embedded separately in v0 — pure cosine over
@@ -579,6 +668,9 @@ def push_lite(
         "sanitization_status": sanitization_status,
         "redactions": redactions,
         "ingest_path": "lite",
+        "session_id": session_id,
+        "turn_count": new_turn_count,
+        "updated_in_place": is_update,
     }
 
 
