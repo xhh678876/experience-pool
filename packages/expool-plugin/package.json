@@ -1,0 +1,26 @@
+{
+  "name": "@chuangzhi/expool-plugin-server",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "expool MCP server (TypeScript) — 里程碑1 薄壳：stdio + 只读工具，子进程调 vendor exp_uploader.py",
+  "bin": {
+    "expool-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "tsx test/smoke.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

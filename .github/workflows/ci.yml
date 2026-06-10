@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    name: core (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[server,test]"
+      - name: Test
+        run: python -m pytest -q
+
+  cli:
+    name: cli (tsc + node --test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci || npm install
+      - run: npx tsc --noEmit
+      - run: npm test
+
+  plugin:
+    name: expool-plugin (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/expool-plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci || npm install
+      - run: npx tsc -p tsconfig.json --noEmit
+      - run: npx tsc -p tsconfig.json
+
+  ui:
+    name: ui (typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci || npm install
+      - run: npx tsc --noEmit --incremental false

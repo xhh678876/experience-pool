@@ -1,0 +1,26 @@
+:{$EXP_GATEWAY_PORT:3080} {
+    encode zstd gzip
+    request_body {
+        max_size 25MB
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+    }
+
+    handle /__gateway/health {
+        header Content-Type application/json
+        respond `{"status":"ok","gateway":"caddy-local","routes":{"api":"{$EXP_API_UPSTREAM:127.0.0.1:8080}","ui":"{$EXP_UI_UPSTREAM:127.0.0.1:3000}"}}` 200
+    }
+
+    @api path /v1/* /healthz /docs* /openapi.json /redoc*
+    handle @api {
+        reverse_proxy {$EXP_API_UPSTREAM:127.0.0.1:8080}
+    }
+
+    handle {
+        reverse_proxy {$EXP_UI_UPSTREAM:127.0.0.1:3000}
+    }
+}

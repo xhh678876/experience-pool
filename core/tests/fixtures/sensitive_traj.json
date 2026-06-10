@@ -1,0 +1,20 @@
+{
+  "trajectory": [
+    {
+      "role": "user",
+      "content": "Please draft an email to john.doe@example.com about the Q3 launch. His phone is +1 415 555 0142 and our internal SSH key starts with ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC9Q3F2C8K8X3Lp6X2D9b2Y2C4P3K8X3Lp6X2D9b2Y2C4P3KZ extra. Reach out via the corp.example.com VPN."
+    },
+    {
+      "role": "assistant",
+      "content": "I'll draft the email. Note the AWS key AKIAIOSFODNN7EXAMPLE in our deploy config and the GitHub token ghp_AbCdEf1234567890zyXwVuTsRq. Source IP 192.168.1.42 was used."
+    },
+    {
+      "role": "user",
+      "content": "Also include EMP12345 as the contact and use card 4111 1111 1111 1111 for the demo charge. Reply with sk-ant-Test1234567890ABCDEFghijKL test."
+    },
+    {
+      "role": "assistant",
+      "content": "Sent to https://admin:hunter2@internal.example.com/launch — confirmation will arrive shortly."
+    }
+  ]
+}

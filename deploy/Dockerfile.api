@@ -1,0 +1,41 @@
+FROM python:3.12-slim
+
+# Build arg to control OPF install — set to "0" to skip the ~1.5GB
+# torch+opf install for resource-constrained hosts. The application
+# still works (gracefully degrades to regex-only sanitize) when OPF
+# is missing.
+ARG INSTALL_OPF=1
+
+WORKDIR /app
+RUN pip install --no-cache-dir uv
+COPY core/pyproject.toml ./core/
+COPY core/exp_core ./core/exp_core
+RUN cd core && uv pip install --system -e ".[server]"
+
+# OpenAI Privacy Filter — Layer 1.5 of the sanitize pipeline. We use the
+# CPU-only torch wheel to avoid pulling CUDA libraries we cannot use on
+# this host. Model weights are NOT downloaded here — they get pulled
+# lazily on first redact_text() call into $OPF_CHECKPOINT (which lives
+# on the persistent /var/lib/expool volume so rebuilds keep the cache).
+RUN if [ "$INSTALL_OPF" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends git && \
+        rm -rf /var/lib/apt/lists/* && \
+        pip install --no-cache-dir \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            "torch==2.4.1+cpu" && \
+        pip install --no-cache-dir \
+            "git+https://github.com/openai/privacy-filter.git" && \
+        apt-get purge -y git && apt-get autoremove -y && \
+        echo "OPF installed (lazy weights)"; \
+    else \
+        echo "OPF skipped (INSTALL_OPF=0)"; \
+    fi
+
+ENV EXP_ROOT=/var/lib/expool \
+    OPF_CHECKPOINT=/var/lib/expool/opf/privacy_filter \
+    OPF_DEVICE=cpu \
+    HF_HOME=/var/lib/expool/hf-cache
+
+VOLUME ["/var/lib/expool"]
+EXPOSE 8080
+CMD ["uvicorn", "exp_core.server:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

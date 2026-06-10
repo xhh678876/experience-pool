@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg
+build/
+dist/cli/
+
+# Node
+node_modules/
+.next/
+ui/.next*/
+packages/*/node_modules/
+*.tsbuildinfo
+.turbo/
+cli/dist/
+packages/*/dist/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Local data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.bak
+
+# Coverage / test artifacts
+.coverage
+coverage/
+htmlcov/
+.cache/
+.experience-pool/
+trajectories/
+skills/*.tar.gz
+*.log
+*.pid
+
+# Build artifacts
+uv.lock
+package-lock.json
+!ui/package-lock.json
+!packages/expool-plugin/package-lock.json
+yarn.lock
+pnpm-lock.yaml
+dist-public/plugins/*.tgz
+dist-public/plugins/*.sha256
+
+# Local env
+.env
+.env.local
+.env.*.local

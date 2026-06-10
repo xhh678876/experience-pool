@@ -1,0 +1,31 @@
+:80 {
+    encode zstd gzip
+    request_body {
+        max_size 25MB
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+    }
+
+    handle /__gateway/health {
+        header Content-Type application/json
+        respond `{"status":"ok","gateway":"caddy","routes":{"api":"127.0.0.1:8080","ui":"127.0.0.1:3000"}}` 200
+    }
+
+    @api path /v1/* /healthz /docs* /openapi.json /redoc* /api-protocol /install /install.sh /exp_uploader.py /exp_annotator.py /exp_consent.py /session_start.sh /agent-contract.md /opf_service.py /opf_filter.py /session-extractor/* /plugins/*
+    handle @api {
+        reverse_proxy 127.0.0.1:8080
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    log {
+        output file /var/log/caddy/expool-access.log
+        format json
+    }
+}
