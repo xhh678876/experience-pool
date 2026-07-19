@@ -4,23 +4,33 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.api
     environment:
-      EXP_ROOT: /var/lib/expool
-      EXP_RATE_LIMIT_ENABLED: "1"
+      EXP_ROOT: ${EXP_CONTAINER_ROOT:-/var/lib/expool}
+      EXP_DB_PATH: ${EXP_CONTAINER_ROOT:-/var/lib/expool}/pool.db
+      EXP_TRAJECTORIES_DIR: ${EXP_CONTAINER_ROOT:-/var/lib/expool}/trajectories
+      EXP_CREDENTIALS_DIR: ${EXP_CONTAINER_ROOT:-/var/lib/expool}/credentials
+      EXP_BIND_BASE_URL: ${EXP_BIND_BASE_URL:-http://127.0.0.1:3080}
+      EXP_RATE_LIMIT_ENABLED: ${EXP_RATE_LIMIT_ENABLED:-1}
     volumes:
-      - expool-data:/var/lib/expool
+      - expool-data:${EXP_CONTAINER_ROOT:-/var/lib/expool}
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${EXP_DOCKER_BIND_HOST:-127.0.0.1}:${EXP_API_PORT:-8080}:8080"
 
   ui:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.ui
+      args:
+        EXP_UI_PUBLIC_URL: ${EXP_UI_PUBLIC_URL:-}
     environment:
-      EXP_DB_PATH: /var/lib/expool/pool.db
+      EXP_ROOT: ${EXP_CONTAINER_ROOT:-/var/lib/expool}
+      EXP_DB_PATH: ${EXP_CONTAINER_ROOT:-/var/lib/expool}/pool.db
+      EXP_TRAJECTORIES_DIR: ${EXP_CONTAINER_ROOT:-/var/lib/expool}/trajectories
+      EXP_API_BASE: http://api:8080
+      EXP_UI_PUBLIC_URL: ${EXP_UI_PUBLIC_URL:-}
     volumes:
-      - expool-data:/var/lib/expool
+      - expool-data:${EXP_CONTAINER_ROOT:-/var/lib/expool}
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${EXP_DOCKER_BIND_HOST:-127.0.0.1}:${EXP_UI_PORT:-3000}:3000"
     depends_on:
       - api
 
@@ -33,7 +43,7 @@ services:
     volumes:
       - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
     ports:
-      - "3080:3080"
+      - "${EXP_DOCKER_GATEWAY_BIND_HOST:-0.0.0.0}:${EXP_GATEWAY_PORT:-3080}:3080"
     depends_on:
       - api
       - ui

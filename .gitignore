@@ -61,3 +61,4 @@ dist-public/plugins/*.sha256
 .env
 .env.local
 .env.*.local
+config/environments/*.local.sh

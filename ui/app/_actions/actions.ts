@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/lib/db";
 import { actorString, requireReviewerName } from "@/lib/auth";
-import { withBase } from "@/components/ui/link";
+import { withPublicBase } from "@/lib/base-path";
+import { canManageExperienceAs } from "@/lib/queries";
 
 type NoticeKind = "success" | "warn" | "danger";
 
@@ -31,7 +32,7 @@ function redirectWithNotice(
   const url = new URL(actionReturnTo(id, formData), "http://experience-pool.local");
   url.searchParams.set("notice", notice);
   url.searchParams.set("noticeKind", noticeKind);
-  redirect(withBase(`${url.pathname}${url.search}`));
+  redirect(withPublicBase(`${url.pathname}${url.search}`));
 }
 
 function appendAudit(
@@ -47,21 +48,17 @@ function appendAudit(
   ).run(actor, "human", action, targetId, JSON.stringify(payload ?? {}));
 }
 
-function ensureExists(id: string): void {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT 1 FROM experiences WHERE experience_id = ?")
-    .get(id);
-  if (!row) {
-    throw new Error(`experience ${id} not found`);
+function ensureCanManage(id: string, reviewer: string): void {
+  if (!canManageExperienceAs(reviewer, id)) {
+    throw new Error("forbidden: only the experience owner can modify this record");
   }
 }
 
 export async function approveAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
-  ensureExists(id);
   const reviewer = await requireReviewerName();
+  ensureCanManage(id, reviewer);
   const actor = actorString(reviewer);
   const db = getDb();
   db.prepare(
@@ -78,8 +75,8 @@ export async function rejectAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   const reason = String(formData.get("reason") ?? "").trim();
   if (!id) return;
-  ensureExists(id);
   const reviewer = await requireReviewerName();
+  ensureCanManage(id, reviewer);
   const actor = actorString(reviewer);
   const db = getDb();
   db.prepare(
@@ -95,8 +92,8 @@ export async function rejectAction(formData: FormData): Promise<void> {
 export async function softDeleteAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
-  ensureExists(id);
   const reviewer = await requireReviewerName();
+  ensureCanManage(id, reviewer);
   const actor = actorString(reviewer);
   const db = getDb();
   // Tag soft_deleted by appending to the JSON tags array in-place.
@@ -124,8 +121,8 @@ export async function softDeleteAction(formData: FormData): Promise<void> {
 export async function rejudgeAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
-  ensureExists(id);
   const reviewer = await requireReviewerName();
+  ensureCanManage(id, reviewer);
   const actor = actorString(reviewer);
   const db = getDb();
   const queued = db
@@ -155,8 +152,8 @@ const EDITABLE_FIELDS = [
 export async function editCardAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
-  ensureExists(id);
   const reviewer = await requireReviewerName();
+  ensureCanManage(id, reviewer);
   const actor = actorString(reviewer);
   const db = getDb();
   const updates: { col: string; value: string }[] = [];
@@ -204,5 +201,5 @@ export async function exportJsonAction(formData: FormData): Promise<void> {
   if (!id) return;
   // Server actions cannot return a file response directly here, so we redirect
   // to a streaming route that produces the export.
-  redirect(withBase(`/api/export/${encodeURIComponent(id)}`));
+  redirect(withPublicBase(`/api/export/${encodeURIComponent(id)}`));
 }

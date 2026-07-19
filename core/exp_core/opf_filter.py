@@ -29,6 +29,7 @@ License: integrating openai/privacy-filter (Apache 2.0).
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import threading
@@ -82,7 +83,11 @@ def _load_api() -> Any:
             _OPF_LOAD_ERROR = "EXP_OPF_DISABLED=1"
             return None
         try:
-            from opf._api import OPF  # type: ignore[import-not-found]
+            # Import the parent first. A stale ``opf._api`` entry can remain
+            # in sys.modules after the package itself becomes unavailable;
+            # importing the child directly would incorrectly reuse it.
+            importlib.import_module("opf")
+            OPF = importlib.import_module("opf._api").OPF
         except Exception as exc:  # noqa: BLE001
             _OPF_LOAD_ERROR = f"opf package not importable: {exc!s}"
             logger.info("OPF disabled: %s", _OPF_LOAD_ERROR)

@@ -11,10 +11,12 @@ import array
 import hashlib
 import math
 import struct
+from functools import lru_cache
 
 DIM = 256
 
 
+@lru_cache(maxsize=200_000)
 def _hash_to_index(token: str) -> tuple[int, int]:
     h = hashlib.sha256(token.encode("utf-8")).digest()
     idx = struct.unpack("<I", h[:4])[0] % DIM

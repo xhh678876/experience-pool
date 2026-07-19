@@ -27,10 +27,10 @@ export default async function ClusterDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const cluster = getCluster(id);
+  const cluster = await getCluster(id);
   if (!cluster) notFound();
-  const members = getClusterMembers(id);
-  const skill = getCrystallizedSkillByCluster(id);
+  const members = await getClusterMembers(id);
+  const skill = await getCrystallizedSkillByCluster(id);
 
   let skillContent: SkillContent | null = null;
   if (skill) {

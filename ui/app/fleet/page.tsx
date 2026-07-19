@@ -1,5 +1,7 @@
 import { withBase } from "@/lib/base-path";
 import FleetLive, { type FleetData } from "./FleetLive";
+import { notFound } from "next/navigation";
+import { isCurrentAdmin } from "@/lib/auth";
 
 // claude-fleet 监控面板（监控本 pod 上的 claude-code / codex 会话）。
 // 服务端直读 fleet :7878 拿初始数据（无 basePath/CORS 问题）；
@@ -37,6 +39,7 @@ export default async function FleetPage() {
       </div>
     );
   }
+  if (!(await isCurrentAdmin())) notFound();
   const initial = await getInitial();
   return <FleetLive initial={initial} pollUrl={withBase("/api/fleet/windows")} />;
 }

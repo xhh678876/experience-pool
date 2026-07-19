@@ -29,6 +29,7 @@ only by the publish endpoint after strict-public checks pass.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -39,6 +40,9 @@ from . import llm, opf_filter
 from .embeddings import cosine, embed, from_blob, to_blob
 from .identity import can_read, parse_acl
 from .sanitize import RuleSet, layer1_text, load_rules
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -211,6 +215,11 @@ def _normalize_acl(acl: str) -> str:
     return "private"
 
 
+def _sanitizer_blocks_review(*, acl: str, high_overall: bool) -> bool:
+    """Private rows are sanitized and audited, but not held out of recall."""
+    return bool(high_overall and acl != "private")
+
+
 def push_lite(
     conn: sqlite3.Connection,
     *,
@@ -262,6 +271,27 @@ def push_lite(
         sid_raw = meta.get("session_id")
         if isinstance(sid_raw, str) and sid_raw.strip():
             session_id = sid_raw.strip()[:200]
+    source_agent_type = (
+        str(meta.get("agent_type") or "").strip()[:40]
+        if isinstance(meta, dict)
+        else ""
+    ) or None
+    source_extra = meta.get("extra") if isinstance(meta, dict) else None
+    source_extra = source_extra if isinstance(source_extra, dict) else {}
+    parent_session_id = str(source_extra.get("parent_session_id") or "").strip()[:200] or None
+    segment_id = str(
+        source_extra.get("segment_id") or source_extra.get("codex_turn_id") or ""
+    ).strip()[:200] or None
+    task_status = str(source_extra.get("task_status") or "").strip()[:40] or None
+
+    def _optional_int(value: Any) -> int | None:
+        try:
+            return None if value in (None, "") else int(value)
+        except (TypeError, ValueError):
+            return None
+
+    source_byte_start = _optional_int(source_extra.get("byte_start"))
+    source_byte_end = _optional_int(source_extra.get("byte_end"))
     new_turn_count = len(trajectory) if trajectory else 0
 
     from . import quality as quality_mod
@@ -527,9 +557,16 @@ def push_lite(
         if meta is not None:
             cleaned_meta = _walk(meta)
 
-    # OPF `secret` hits are treated as high severity (regex missed them but
-    # OPF says they're credentials → human review, not auto-approved).
+    # 走 update-in-place 时复用旧 eid;新 row 才 mint 新 uuid
+    is_update = update_target_eid is not None
+    eid = update_target_eid if is_update else str(uuid.uuid4())
+    acl = _normalize_acl(card.acl)
+
+    # OPF `secret` hits are treated as high severity (regex missed them).
+    # Private rows still get sanitized and audited, but high hits should not
+    # block the owner's private recall/RAG path.
     high_overall = server_high or opf_high
+    blocks_review = _sanitizer_blocks_review(acl=acl, high_overall=high_overall)
     if defer_opf:
         # Layer 1 done, OPF deferred to background backfill. Don't claim
         # 'done' since the heavier privacy pass hasn't run yet.
@@ -538,12 +575,7 @@ def push_lite(
         sanitization_status = (
             "human_review" if high_overall else ("flagged" if redactions else "done")
         )
-    review_status = "pending" if high_overall else "auto_approved"
-
-    # 走 update-in-place 时复用旧 eid;新 row 才 mint 新 uuid
-    is_update = update_target_eid is not None
-    eid = update_target_eid if is_update else str(uuid.uuid4())
-    acl = _normalize_acl(card.acl)
+    review_status = "pending" if blocks_review else "auto_approved"
 
     trajectory_path: str | None = None
     has_payload = (
@@ -583,6 +615,8 @@ def push_lite(
                 sensitivity=?, acl=?, tags=?,
                 sanitization_status=?, review_status=?, extraction_status=?,
                 trajectory_path=?,
+                source_agent_type=?, parent_session_id=?, segment_id=?,
+                source_byte_start=?, source_byte_end=?, task_status=?,
                 turn_count=?,
                 content_fingerprint=?
             WHERE experience_id=?
@@ -594,6 +628,8 @@ def push_lite(
                 card.sensitivity, acl, json.dumps(card.tags),
                 sanitization_status, review_status, "done",
                 trajectory_path,
+                source_agent_type, parent_session_id, segment_id,
+                source_byte_start, source_byte_end, task_status,
                 new_turn_count,
                 fingerprint,
                 eid,
@@ -608,8 +644,9 @@ def push_lite(
                 sensitivity, acl, tags,
                 sanitization_status, review_status, extraction_status,
                 ingest_path, trajectory_path,
-                session_id, turn_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                session_id, source_agent_type, parent_session_id, segment_id,
+                source_byte_start, source_byte_end, task_status, turn_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 eid, agent_id, card.task_type, card.source_model,
@@ -618,7 +655,8 @@ def push_lite(
                 card.sensitivity, acl, json.dumps(card.tags),
                 sanitization_status, review_status, "done",
                 "lite", trajectory_path,
-                session_id, new_turn_count,
+                session_id, source_agent_type, parent_session_id, segment_id,
+                source_byte_start, source_byte_end, task_status, new_turn_count,
             ),
         )
     _mark("insert_or_update_experiences")
@@ -641,6 +679,9 @@ def push_lite(
         (agent_name, "agent", "push_lite", eid,
          json.dumps({"redactions": redactions,
                      "sanitization_status": sanitization_status,
+                     "review_status": review_status,
+                     "sanitizer_blocked_review": blocks_review,
+                     "acl": acl,
                      "task_type": card.task_type,
                      "opf_status": opf_filter.status()})),
     )
@@ -663,6 +704,17 @@ def push_lite(
         _mark("recompute_quality")
     except Exception:
         pass
+    rag_indexed = False
+    rag_index_error: str | None = None
+    try:
+        from . import rag as rag_mod
+        rag_mod.ensure_schema(conn)
+        rag_mod.rebuild_experience(conn, eid)
+        rag_indexed = True
+        _mark("rebuild_rag")
+    except Exception as exc:
+        rag_index_error = str(exc)[:300]
+        LOG.exception("RAG indexing failed for experience %s", eid)
     if _PROF:
         # print to stderr; uvicorn surfaces it in server.log
         import sys as _sys
@@ -680,8 +732,15 @@ def push_lite(
         "ingest_path": "lite",
         "acl": acl,
         "session_id": session_id,
+        "source_agent_type": source_agent_type,
+        "parent_session_id": parent_session_id,
+        "segment_id": segment_id,
+        "source_byte_start": source_byte_start,
+        "source_byte_end": source_byte_end,
         "turn_count": new_turn_count,
         "updated_in_place": is_update,
+        "rag_indexed": rag_indexed,
+        "rag_index_error": rag_index_error,
     }
 
 

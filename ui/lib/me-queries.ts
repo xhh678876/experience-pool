@@ -212,7 +212,8 @@ export async function revokeExperience(
     .prepare(
       `
       SELECT e.experience_id, e.agent_id, e.trajectory_path,
-             COALESCE(e.revoked, 0) AS revoked, a.name AS agent_name
+             COALESCE(e.revoked, 0) AS revoked, a.name AS agent_name,
+             COALESCE(a.owner, a.name) AS agent_owner
       FROM experiences e JOIN agents a USING(agent_id)
       WHERE e.experience_id = ?
       `
@@ -224,6 +225,7 @@ export async function revokeExperience(
         trajectory_path: string | null;
         revoked: number;
         agent_name: string;
+        agent_owner: string;
       }
     | undefined;
 
@@ -236,12 +238,13 @@ export async function revokeExperience(
       deleted_files: [],
     };
   }
-  if (row.agent_name !== viewerName) {
+  const viewerOwner = resolveOwner(db, viewerName);
+  if (row.agent_owner !== viewerOwner) {
     return {
       ok: false,
       experience_id: experienceId,
       status: "forbidden",
-      error: `viewer "${viewerName}" does not own experience (owner: ${row.agent_name})`,
+      error: `viewer "${viewerName}" does not own experience (owner: ${row.agent_owner})`,
       deleted_files: [],
     };
   }
@@ -258,13 +261,18 @@ export async function revokeExperience(
   const deleted: string[] = [];
   if (row.trajectory_path) {
     const trustedRoot = process.env.EXP_TRAJECTORIES_DIR ||
-      path.join(process.env.HOME || "/", ".experience-pool", "trajectories");
-    const resolved = path.resolve(row.trajectory_path);
+      (process.env.EXP_DB_PATH
+        ? path.join(/* turbopackIgnore: true */ path.dirname(process.env.EXP_DB_PATH), "trajectories")
+        : process.env.EXP_ROOT
+          ? path.join(/* turbopackIgnore: true */ process.env.EXP_ROOT, "trajectories")
+          : path.join(/* turbopackIgnore: true */ process.env.HOME || "/", ".experience-pool", "trajectories"));
+    const resolved = path.resolve(/* turbopackIgnore: true */ row.trajectory_path);
+    const relative = path.relative(path.resolve(/* turbopackIgnore: true */ trustedRoot), resolved);
     // Defense-in-depth: only delete files inside the configured trajectory
     // directory, even if the DB row claims an absolute path elsewhere.
-    if (resolved.startsWith(path.resolve(trustedRoot)) && fs.existsSync(resolved)) {
+    if (!relative.startsWith("..") && !path.isAbsolute(relative) && fs.existsSync(/* turbopackIgnore: true */ resolved)) {
       try {
-        fs.unlinkSync(resolved);
+        fs.unlinkSync(/* turbopackIgnore: true */ resolved);
         deleted.push(resolved);
       } catch {
         // Best-effort. The DB row still gets marked revoked even if
@@ -302,6 +310,14 @@ export async function revokeExperience(
       ).run(experienceId);
     } catch {
       // ditto
+    }
+    try {
+      db.prepare(
+        "DELETE FROM rag_vectors WHERE chunk_id IN (SELECT chunk_id FROM rag_chunks WHERE experience_id = ?)"
+      ).run(experienceId);
+      db.prepare("DELETE FROM rag_chunks WHERE experience_id = ?").run(experienceId);
+    } catch {
+      // RAG tables may not exist on older deployments.
     }
     db.prepare(
       `

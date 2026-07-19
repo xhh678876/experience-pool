@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  canManageExperience,
   getAuditsForTarget,
   getChildren,
   getExperience,
@@ -19,13 +20,14 @@ export async function GET(
   if (!exp) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
+  const canManage = await canManageExperience(id);
   const payload = {
-    experience: exp,
+    experience: canManage ? exp : { ...exp, trajectory_path: null, strict_redactions: null },
     reward: getLatestReward(id),
     q_updates: getQUpdates(id),
-    parents: getParents(id),
-    children: getChildren(id),
-    audits: getAuditsForTarget(id),
+    parents: canManage ? getParents(id) : [],
+    children: canManage ? getChildren(id) : [],
+    audits: canManage ? getAuditsForTarget(id) : [],
   };
   return new NextResponse(JSON.stringify(payload, null, 2), {
     status: 200,

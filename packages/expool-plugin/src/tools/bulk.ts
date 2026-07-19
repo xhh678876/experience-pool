@@ -15,6 +15,13 @@ function extractSessions(r: CommandResult): Array<Record<string, unknown>> {
   return Array.isArray(sessions) ? (sessions as Array<Record<string, unknown>>) : [];
 }
 
+function extractTotal(r: CommandResult, fallback: number): number {
+  const result = r.result;
+  if (typeof result !== "object" || result === null) return fallback;
+  const total = (result as Record<string, unknown>).total;
+  return typeof total === "number" && Number.isFinite(total) ? total : fallback;
+}
+
 // 里程碑：迁移批量类工具（detect / upload-all / install-skill），逐字对照 Python 版。
 export function registerBulkTools(server: McpServer, runner: CommandRunner): void {
   // 1) exp_detect_runtimes：只读探测，免 key，所有 source 并行 list-sessions。
@@ -40,7 +47,7 @@ export function registerBulkTools(server: McpServer, runner: CommandRunner): voi
           const newest = (sessions[0] ?? {}) as Record<string, unknown>;
           const info = {
             available: Boolean(r.ok && sessions.length > 0),
-            count: sessions.length,
+            count: extractTotal(r, sessions.length),
             newest: newest.mtime ?? newest.ended_at ?? newest.updated_at ?? null,
             model: (newest.model as string | undefined) ?? "unknown",
             error: r.error ?? null,
@@ -55,7 +62,7 @@ export function registerBulkTools(server: McpServer, runner: CommandRunner): voi
     },
   );
 
-  // 2) exp_upload_all：批量上传。full=true 时按 source 并行 push-all；否则跑增量 daemon-tick。
+  // 2) exp_upload_all：批量上传。full=true 时逐 source push-all；否则跑增量 daemon-tick。
   server.registerTool(
     "exp_upload_all",
     {
@@ -76,34 +83,34 @@ export function registerBulkTools(server: McpServer, runner: CommandRunner): voi
           });
         }
 
-        // 各 source 独立子进程，Promise.all 真并行；防御性兜底单个失败不拖垮整体。
-        const results = await Promise.all(
-          sources.map(async (src) => {
-            try {
-              const r = await runner.run(
-                [
-                  "push-all",
-                  "--source",
-                  src,
-                  "--yes",
-                  "--task",
-                  "auto-sync",
-                  "--sensitivity",
-                  "medium",
-                  "--acl",
-                  "private",
-                ],
-                { timeoutMs: 600_000 },
-              );
-              return [src, r] as const;
-            } catch (e) {
-              return [
+        // Full backfills are CPU/IO heavy (especially long Codex rollouts),
+        // so run sources sequentially to avoid saturating the SQLite gateway.
+        const results: Array<readonly [string, CommandResult]> = [];
+        for (const src of sources) {
+          try {
+            const r = await runner.run(
+              [
+                "push-all",
+                "--source",
                 src,
-                { ok: false, result: null, error: String(e) } as CommandResult,
-              ] as const;
-            }
-          }),
-        );
+                "--yes",
+                "--task",
+                "auto-sync",
+                "--sensitivity",
+                "medium",
+                "--acl",
+                "private",
+              ],
+              { timeoutMs: 600_000 },
+            );
+            results.push([src, r] as const);
+          } catch (e) {
+            results.push([
+              src,
+              { ok: false, result: null, error: String(e) } as CommandResult,
+            ] as const);
+          }
+        }
 
         const by_source: Record<string, unknown> = {};
         for (const [src, r] of results) by_source[src] = r;

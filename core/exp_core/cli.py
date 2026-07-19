@@ -35,8 +35,7 @@ from .pool import ExperiencePool, PoolConfig
 
 
 def _config() -> PoolConfig:
-    root = Path(os.getenv("EXP_ROOT", str(Path.home() / ".experience-pool")))
-    return PoolConfig(root=root)
+    return PoolConfig.from_env()
 
 
 def cmd_register(args) -> int:

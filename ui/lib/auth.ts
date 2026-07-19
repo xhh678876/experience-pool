@@ -55,6 +55,18 @@ export async function requireReviewerName(): Promise<string> {
   return me.default_agent_name;
 }
 
+export async function isCurrentAdmin(): Promise<boolean> {
+  const me = await getCurrentUser();
+  if (!me) return false;
+  const allowed = new Set(
+    (process.env.EXP_ADMIN_EMAILS ?? "")
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return allowed.has(me.email.toLowerCase());
+}
+
 export function actorString(reviewer: string): string {
   return `reviewer:${reviewer}`;
 }

@@ -82,6 +82,24 @@ def _redact_via_remote(trajectory: list[dict[str, Any]]) -> tuple[list[dict[str,
     )
 
 
+def _sanitizer_blocks_review(*, acl: str, triggered_high: bool) -> bool:
+    return bool(triggered_high and acl != "private")
+
+
+def _rebuild_rag(conn: sqlite3.Connection, eid: str) -> None:
+    try:
+        root = Path(__file__).resolve().parents[1]
+        core = root / "core"
+        if str(core) not in sys.path:
+            sys.path.insert(0, str(core))
+        from exp_core import rag  # noqa: PLC0415
+
+        rag.ensure_schema(conn)
+        rag.rebuild_experience(conn, eid)
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("eid=%s failed to rebuild RAG chunks: %s", eid[:8], exc)
+
+
 def _process_row(conn: sqlite3.Connection, row: sqlite3.Row, *, dry_run: bool) -> str:
     """Process one row. Returns one of: 'done', 'no-trajectory', 'failed', 'skip'.
     Caller commits."""
@@ -146,7 +164,11 @@ def _process_row(conn: sqlite3.Connection, row: sqlite3.Row, *, dry_run: bool) -
     # We don't have a clean redactions column; OPF hits become a
     # "post-sanitize" entry in audit_log, plus we simply update status.
     new_status = "human_review" if triggered_high else "done"
-    new_review = "pending" if triggered_high else "auto_approved"
+    blocks_review = _sanitizer_blocks_review(
+        acl=row["acl"] or "private",
+        triggered_high=triggered_high,
+    )
+    new_review = "pending" if blocks_review else "auto_approved"
     conn.execute(
         """UPDATE experiences SET sanitization_status=?, review_status=?
            WHERE experience_id=? AND sanitization_status='layer1_only'""",
@@ -156,8 +178,16 @@ def _process_row(conn: sqlite3.Connection, row: sqlite3.Row, *, dry_run: bool) -
         """INSERT INTO audit_log (actor, actor_kind, action, target_id, payload)
            VALUES (?, 'system', 'opf_backfill', ?, ?)""",
         ("opf_worker", eid,
-         json.dumps({"hits": hits, "triggered_high": triggered_high})),
+         json.dumps({
+             "hits": hits,
+             "triggered_high": triggered_high,
+             "review_status": new_review,
+             "sanitizer_blocked_review": blocks_review,
+             "acl": row["acl"] or "private",
+         })),
     )
+    if new_review == "auto_approved":
+        _rebuild_rag(conn, eid)
     return "done"
 
 
@@ -171,7 +201,7 @@ def run_once(*, limit: int, dry_run: bool) -> dict[str, int]:
     conn.execute("PRAGMA busy_timeout = 30000")
 
     rows = conn.execute(
-        """SELECT experience_id, trajectory_path
+        """SELECT experience_id, trajectory_path, acl
            FROM experiences
            WHERE sanitization_status='layer1_only'
              AND COALESCE(revoked, 0) = 0

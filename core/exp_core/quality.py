@@ -61,6 +61,12 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     #   superseded     — 被同 session 的更新版本顶替时标 1,等同软撤回:
     #                    搜索/列表都过滤掉,UI 不显示
     ("experiences", "session_id",         "TEXT"),
+    ("experiences", "source_agent_type",  "TEXT"),
+    ("experiences", "parent_session_id",  "TEXT"),
+    ("experiences", "segment_id",         "TEXT"),
+    ("experiences", "source_byte_start",  "INTEGER"),
+    ("experiences", "source_byte_end",    "INTEGER"),
+    ("experiences", "task_status",        "TEXT"),
     ("experiences", "turn_count",         "INTEGER NOT NULL DEFAULT 0"),
     ("experiences", "superseded",         "INTEGER NOT NULL DEFAULT 0"),
 ]
@@ -89,6 +95,11 @@ def ensure_quality_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_exp_session "
         "ON experiences(agent_id, session_id) "
         "WHERE session_id IS NOT NULL AND superseded=0 AND revoked=0"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exp_parent_session "
+        "ON experiences(agent_id, parent_session_id, source_byte_start) "
+        "WHERE parent_session_id IS NOT NULL AND superseded=0 AND revoked=0"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_exp_publish ON experiences(publish_status)"

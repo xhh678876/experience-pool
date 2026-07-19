@@ -248,11 +248,76 @@ def judge_drift(pool: ExperiencePool, baseline_path: Path) -> DriftReport:
 def reuse_leaderboard(pool: ExperiencePool, top_k: int = 20) -> list[dict[str, Any]]:
     cur = pool.conn.execute(
         """
-        SELECT experience_id, intent_text, task_type, reuse_count, q_update_count,
-               q_outcome, q_intent, q_execution, q_orchestration, q_expression
-        FROM experiences
-        WHERE review_status IN ('approved', 'auto_approved', 'edited')
-        ORDER BY reuse_count DESC, q_update_count DESC
+        WITH feedback AS (
+            SELECT
+                experience_id,
+                COUNT(DISTINCT event_id) AS event_count,
+                COUNT(*) AS feedback_count,
+                COALESCE(SUM(CASE WHEN was_used_by_agent = 1 THEN 1 ELSE 0 END), 0) AS used_count,
+                COALESCE(SUM(CASE WHEN was_used_by_agent = 0 THEN 1 ELSE 0 END), 0) AS not_used_count,
+                COALESCE(SUM(CASE WHEN reward > 0 THEN 1 ELSE 0 END), 0) AS positive_count,
+                COALESCE(SUM(CASE WHEN reward < 0 THEN 1 ELSE 0 END), 0) AS negative_count,
+                AVG(reward) AS avg_reward,
+                AVG(confidence) AS avg_confidence,
+                MAX(feedback_at) AS latest_feedback_at
+            FROM reuse_items
+            WHERE feedback_at IS NOT NULL
+            GROUP BY experience_id
+        )
+        SELECT
+            e.experience_id,
+            e.intent_text,
+            e.task_type,
+            e.reuse_count,
+            e.q_update_count,
+            e.q_outcome,
+            e.q_intent,
+            e.q_execution,
+            e.q_orchestration,
+            e.q_expression,
+            e.trajectory_score,
+            COALESCE(f.event_count, 0) AS event_count,
+            COALESCE(f.feedback_count, 0) AS feedback_count,
+            COALESCE(f.used_count, 0) AS used_count,
+            COALESCE(f.not_used_count, 0) AS not_used_count,
+            COALESCE(f.positive_count, 0) AS positive_count,
+            COALESCE(f.negative_count, 0) AS negative_count,
+            f.avg_reward,
+            f.avg_confidence,
+            f.latest_feedback_at
+        FROM experiences e
+        LEFT JOIN feedback f ON f.experience_id = e.experience_id
+        WHERE COALESCE(e.revoked, 0) = 0
+          AND COALESCE(e.superseded, 0) = 0
+        ORDER BY
+            (
+                0.45 * CASE
+                    WHEN COALESCE(f.feedback_count, 0) > 0
+                    THEN CAST(COALESCE(f.used_count, 0) AS REAL) / COALESCE(f.feedback_count, 1)
+                    ELSE 0.0
+                END
+                + 0.25 * CASE
+                    WHEN COALESCE(f.feedback_count, 0) > 0
+                    THEN ((COALESCE(f.avg_reward, 0) + 1.0) / 2.0)
+                    ELSE 0.0
+                END
+                + 0.20 * ((CASE
+                    WHEN COALESCE(e.q_update_count, 0) > 0
+                      OR ABS(0.30 * COALESCE(e.q_outcome, 0)
+                        + 0.20 * COALESCE(e.q_intent, 0)
+                        + 0.20 * COALESCE(e.q_execution, 0)
+                        + 0.15 * COALESCE(e.q_orchestration, 0)
+                        + 0.15 * COALESCE(e.q_expression, 0)) > 0.000000001
+                    THEN 0.30 * COALESCE(e.q_outcome, 0)
+                        + 0.20 * COALESCE(e.q_intent, 0)
+                        + 0.20 * COALESCE(e.q_execution, 0)
+                        + 0.15 * COALESCE(e.q_orchestration, 0)
+                        + 0.15 * COALESCE(e.q_expression, 0)
+                    ELSE COALESCE(e.trajectory_score, 0)
+                END + 1.0) / 2.0)
+                + 0.10 * (CAST(COALESCE(e.reuse_count, 0) AS REAL) / (COALESCE(e.reuse_count, 0) + 5.0))
+            ) DESC,
+            COALESCE(f.latest_feedback_at, e.created_at) DESC
         LIMIT ?
         """,
         (top_k,),
@@ -260,9 +325,32 @@ def reuse_leaderboard(pool: ExperiencePool, top_k: int = 20) -> list[dict[str, A
     out = []
     for r in cur.fetchall():
         d = dict(r)
-        d["q_scalar"] = (
+        learned_q = (
             0.30 * d["q_outcome"] + 0.20 * d["q_intent"] + 0.20 * d["q_execution"]
             + 0.15 * d["q_orchestration"] + 0.15 * d["q_expression"]
+        )
+        has_online_q = bool(d.get("q_update_count") or abs(learned_q) > 1e-9)
+        d["q_scalar"] = (
+            learned_q if has_online_q else float(d.get("trajectory_score") or learned_q)
+        )
+        feedback_count = float(d.get("feedback_count") or 0)
+        used_count = float(d.get("used_count") or 0)
+        reuse_rate = used_count / feedback_count if feedback_count > 0 else 0.0
+        reward_component = (
+            ((float(d.get("avg_reward") or 0.0) + 1.0) / 2.0)
+            if feedback_count > 0 else 0.0
+        )
+        reuse_component = (
+            float(d.get("reuse_count") or 0)
+            / (float(d.get("reuse_count") or 0) + 5.0)
+        )
+        q_component = (d["q_scalar"] + 1.0) / 2.0
+        d["reuse_rate"] = reuse_rate
+        d["rank_score"] = (
+            0.45 * reuse_rate
+            + 0.25 * reward_component
+            + 0.20 * q_component
+            + 0.10 * reuse_component
         )
         out.append(d)
     return out

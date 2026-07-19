@@ -55,8 +55,7 @@ LAST_RATE_PRUNE = 0.0
 def _pool() -> ExperiencePool:
     global POOL
     if POOL is None:
-        root = Path(os.getenv("EXP_ROOT", str(Path.home() / ".experience-pool")))
-        POOL = ExperiencePool(PoolConfig(root=root))
+        POOL = ExperiencePool(PoolConfig.from_env())
     return POOL
 
 
@@ -76,6 +75,15 @@ async def _lifespan(_app: FastAPI):
             "user_registration_open",
             hint="anyone can call POST /v1/users/register; set EXP_USER_REGISTER_TOKEN to gate it",
         )
+    try:
+        from . import rag as rag_mod
+
+        vector_count = rag_mod.warm_vector_index(_pool().conn)
+        LOG.info("rag_vector_index_ready", vectors=vector_count)
+    except Exception as exc:
+        # RAG remains available through the pure-Python fallback; startup must
+        # not fail solely because an optional acceleration path is unavailable.
+        LOG.warning("rag_vector_index_warm_failed", error=str(exc))
     yield
 
 
@@ -115,6 +123,12 @@ SESSION_AUTH_PATHS = {
 
 def _is_session_auth_path(path: str) -> bool:
     if path in SESSION_AUTH_PATHS:
+        return True
+    if path == "/v1/rag/context":
+        return True
+    if path == "/v1/reuse/feedback":
+        return True
+    if path == "/v1/projects" or path.startswith("/v1/projects/"):
         return True
     # Subpaths under /v1/users/me/api-keys (e.g. .../api-keys/<key_id>)
     if path.startswith("/v1/users/me/api-keys/"):
@@ -216,6 +230,7 @@ def _latest_plugin_tarball() -> Path | None:
         if root.is_dir():
             candidates.update(root.glob("expool.tgz"))
             candidates.update(root.glob("chuangzhi-expool-plugin-*.tgz"))
+            candidates.update(root.glob("haohui666-expool-plugin-*.tgz"))
     if not candidates:
         return None
     return sorted(candidates, key=lambda p: (_plugin_version_key(p), p.name), reverse=True)[0]
@@ -242,17 +257,31 @@ def _plugin_version_key(tarball: Path) -> tuple[int, int, int, str]:
     return (nums[0], nums[1], nums[2], version)
 
 
+def _gateway_from_ui_public_url(ui_public: str | None) -> str | None:
+    ui_public = (ui_public or "").rstrip("/")
+    m = re.match(r"^(.*)/proxy/\d+/?$", ui_public)
+    if not m:
+        return None
+    return f"{m.group(1)}/proxy/3080"
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    return re.match(r"^https?://(127\.0\.0\.1|localhost|0\.0\.0\.0)(?::|/|$)",
+                    base_url, flags=re.I) is not None
+
+
 def _request_public_base_url(request: Request) -> str:
     explicit = (os.getenv("EXP_PUBLIC_BASE_URL")
                 or os.getenv("EXP_PUBLIC_API_BASE")
                 or os.getenv("EXP_BIND_BASE_URL"))
+    ui_gateway = _gateway_from_ui_public_url(os.getenv("EXP_UI_PUBLIC_URL"))
     if explicit:
-        return explicit.rstrip("/")
-    ui_public = os.getenv("EXP_UI_PUBLIC_URL")
-    if ui_public:
-        m = re.match(r"^(.*)/proxy/\d+/?$", ui_public.rstrip("/"))
-        if m:
-            return f"{m.group(1)}/proxy/3080"
+        explicit = explicit.rstrip("/")
+        if _is_loopback_base_url(explicit) and ui_gateway:
+            return ui_gateway
+        return explicit
+    if ui_gateway:
+        return ui_gateway
     proto = (request.headers.get("x-forwarded-proto")
              or ("https" if request.url.scheme == "https" else "http"))
     host = (request.headers.get("x-forwarded-host")
@@ -264,7 +293,7 @@ def _request_public_base_url(request: Request) -> str:
 def _plugin_tarball_metadata(tarball: Path) -> dict[str, Any]:
     raw = tarball.read_bytes()
     stat = tarball.stat()
-    package_name = "@chuangzhi/expool-plugin"
+    package_name = os.getenv("EXP_PLUGIN_NPM_PACKAGE", "@haohui666/expool-plugin")
     version = None
     try:
         with tarfile.open(tarball, "r:gz") as tf:
@@ -276,7 +305,7 @@ def _plugin_tarball_metadata(tarball: Path) -> dict[str, Any]:
     except (OSError, tarfile.TarError, json.JSONDecodeError, UnicodeDecodeError):
         version = None
     if not version:
-        version = tarball.stem.replace("chuangzhi-expool-plugin-", "")
+        version = re.sub(r"^(?:chuangzhi|haohui666)-expool-plugin-", "", tarball.stem)
     return {
         "name": package_name,
         "version": version,
@@ -314,14 +343,25 @@ curl --noproxy '*' -fsSL "$URL" -o "$TMP"
 
 if command -v sha256sum >/dev/null 2>&1; then
   got="$(sha256sum "$TMP" | awk '{{print $1}}')"
-  if [ "$got" != "$SHA256" ]; then
-    echo "[expool] sha256 mismatch: expected $SHA256, got $got" >&2
-    exit 1
-  fi
-  echo "[expool] sha256 ok: $SHA256"
+elif command -v shasum >/dev/null 2>&1; then
+  got="$(shasum -a 256 "$TMP" | awk '{{print $1}}')"
+elif command -v python3 >/dev/null 2>&1; then
+  got="$(python3 - "$TMP" <<'PY'
+import hashlib
+import sys
+with open(sys.argv[1], "rb") as fh:
+    print(hashlib.file_digest(fh, "sha256").hexdigest())
+PY
+)"
 else
-  echo "[expool] sha256sum not found; skipping checksum verification" >&2
+  echo "[expool] cannot verify package: install sha256sum, shasum, or python3" >&2
+  exit 1
 fi
+if [ "$got" != "$SHA256" ]; then
+  echo "[expool] sha256 mismatch: expected $SHA256, got $got" >&2
+  exit 1
+fi
+echo "[expool] sha256 ok: $SHA256"
 
 npm install -g "$TMP"
 echo "[expool] auto-detecting installed agents and registering MCP..."
@@ -412,7 +452,11 @@ def _rate_group(request: Request) -> tuple[str, int] | None:
         return ("search", _env_int("EXP_RATE_SEARCH_PER_MIN", 1000))
     if path == "/v1/lite/search" and method == "POST":
         return ("search", _env_int("EXP_RATE_SEARCH_PER_MIN", 1000))
+    if path == "/v1/rag/context" and method == "POST":
+        return ("search", _env_int("EXP_RATE_SEARCH_PER_MIN", 1000))
     if path == "/v1/lite/rewards" and method == "POST":
+        return ("rewards", _env_int("EXP_RATE_REWARDS_PER_MIN", 60))
+    if path == "/v1/reuse/feedback" and method == "POST":
         return ("rewards", _env_int("EXP_RATE_REWARDS_PER_MIN", 60))
     if path == "/v1/lite/revoke" and method == "POST":
         return ("revoke", _env_int("EXP_RATE_REVOKE_PER_MIN", 30))
@@ -587,7 +631,11 @@ async def hmac_auth(request: Request, call_next):
             return limited
         return await _call_and_log(request, call_next)
     # Session-cookie auth: skip HMAC, let route validate the cookie itself.
-    if _is_session_auth_path(request.url.path):
+    if (
+        _is_session_auth_path(request.url.path)
+        and _extract_bearer(request) is None
+        and not request.headers.get("x-agent-name")
+    ):
         limited = _rate_limit_response(request)
         if limited is not None:
             _log_request(request, limited.status_code, 0)
@@ -880,13 +928,19 @@ async def skill_search(
     request: Request, q: str, top_k: int = 5,
 ) -> dict[str, Any]:
     pool = _pool()
-    return {"results": pool.search_skills(q, top_k=top_k)}
+    return {
+        "results": pool.search_skills(
+            q, top_k=top_k, viewer_name=request.state.agent_name
+        )
+    }
 
 
 @app.get("/v1/skills/install")
 async def skill_install(name: str, request: Request, version: str | None = None):
     pool = _pool()
-    row = skills_mod.resolve_skill(pool.conn, name, version)
+    row = skills_mod.resolve_skill_for_viewer(
+        pool.conn, name, version, request.state.agent_name
+    )
     if row is None:
         raise HTTPException(status_code=404, detail=f"unknown skill: {name}")
     bundle_path = Path(row["bundle_path"])
@@ -935,6 +989,17 @@ class LiteSearchReq(BaseModel):
     # 'personal' = force personal-only. 'community' = force public-only
     # (still gated by quota).
     scope: str = "auto"
+
+
+class RagContextReq(BaseModel):
+    q: str
+    top_k: int = 3
+    task_type: str | None = None
+    scope: str = "auto"
+    project: str | None = None
+    # Portal previews exercise the production retriever without inflating
+    # online reuse/Q telemetry. Agent calls keep the default and are recorded.
+    record_event: bool = True
 
 
 @app.post("/v1/lite/push", status_code=202)
@@ -1013,6 +1078,120 @@ async def lite_search(req: LiteSearchReq, request: Request) -> dict[str, Any]:
     )
 
 
+@app.post("/v1/rag/context")
+async def rag_context(req: RagContextReq, request: Request) -> dict[str, Any]:
+    """Return a platform-built RAG context pack for automatic recall.
+
+    Unlike /v1/lite/search, this endpoint retrieves chunks, applies ACL on the
+    server, deduplicates by experience, and returns a compact injection string.
+    It accepts either agent auth (Bearer/HMAC) or web session cookie.
+    """
+    from . import rag as rag_mod
+
+    pool = _pool()
+    actor = getattr(request.state, "agent_name", None)
+    if not actor:
+        actor = _current_user_or_401(request).default_agent_name
+    try:
+        return rag_mod.context_for_query(
+            pool.conn,
+            viewer_name=actor,
+            query=req.q,
+            top_k=max(1, min(50, req.top_k)),
+            task_type=req.task_type,
+            scope=req.scope,
+            project=req.project,
+            record_event=req.record_event,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+class ReuseFeedbackItemReq(BaseModel):
+    experience_id: str | None = None
+    chunk_id: str | None = None
+    reward: float | None = None
+    confidence: float | None = None
+    used: bool | None = None
+    reason: str = ""
+
+
+class ReuseFeedbackReq(BaseModel):
+    event_id: str
+    items: list[ReuseFeedbackItemReq] = Field(default_factory=list)
+    # Convenience form: apply one reward to every chunk in the event.
+    reward: float | None = None
+    confidence: float = 0.35
+    used: bool = True
+    reason: str = ""
+    feedback_source: str = "agent"
+    final_status: str = "unknown"
+
+
+def _validate_reuse_reward(value: float | None, *, field: str) -> None:
+    if value is None:
+        return
+    if not (-1.0 <= value <= 1.0):
+        raise HTTPException(status_code=400, detail=f"{field} must be in [-1,1]")
+
+
+def _validate_reuse_confidence(value: float | None, *, field: str) -> None:
+    if value is None:
+        return
+    if not (0.0 <= value <= 1.0):
+        raise HTTPException(status_code=400, detail=f"{field} must be in [0,1]")
+
+
+def _feedback_item_dict(item: ReuseFeedbackItemReq) -> dict[str, Any]:
+    if hasattr(item, "model_dump"):
+        return item.model_dump(exclude_none=True)
+    return item.dict(exclude_none=True)
+
+
+@app.post("/v1/reuse/feedback")
+async def reuse_feedback(req: ReuseFeedbackReq, request: Request) -> dict[str, Any]:
+    """Mark recalled chunks as helpful or harmful and update experience Q.
+
+    Agents normally call this after finishing a task that received RAG context.
+    The event id comes from /v1/rag/context. A positive reward raises Q for the
+    recalled experience; a negative reward lowers it. Updates are intentionally
+    small and confidence-weighted.
+    """
+    from . import reuse_feedback as reuse_feedback_mod
+
+    _validate_reuse_reward(req.reward, field="reward")
+    _validate_reuse_confidence(req.confidence, field="confidence")
+    for idx, item in enumerate(req.items):
+        _validate_reuse_reward(item.reward, field=f"items[{idx}].reward")
+        _validate_reuse_confidence(item.confidence, field=f"items[{idx}].confidence")
+    pool = _pool()
+    actor = getattr(request.state, "agent_name", None)
+    if not actor:
+        actor = _current_user_or_401(request).default_agent_name
+    try:
+        return reuse_feedback_mod.apply_feedback(
+            pool.conn,
+            viewer_name=actor,
+            event_id=req.event_id,
+            items=[_feedback_item_dict(item) for item in req.items],
+            reward=req.reward,
+            confidence=req.confidence,
+            used=req.used,
+            reason=req.reason,
+            feedback_source=req.feedback_source,
+            final_status=req.final_status,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        msg = str(exc)
+        if "not found" in msg or "unknown agent" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
 # ----- revoke (right-to-be-forgotten) ----------------------------------------
 
 
@@ -1066,9 +1245,15 @@ async def lite_revoke(req: LiteRevokeReq, request: Request) -> dict[str, Any]:
     deleted_files: list[str] = []
     traj_path = row["trajectory_path"]
     if traj_path:
-        from pathlib import Path as _P
-        p = _P(traj_path)
-        if p.exists():
+        p = Path(traj_path).expanduser().resolve()
+        trusted_root = pool.config.trajectories_dir.expanduser().resolve()
+        try:
+            p.relative_to(trusted_root)
+            trusted_path = True
+        except ValueError:
+            trusted_path = False
+            LOG.warning("revoke: refusing trajectory outside storage root", path=str(p))
+        if trusted_path and p.exists():
             try:
                 p.unlink()
                 deleted_files.append(str(p))
@@ -1095,6 +1280,12 @@ async def lite_revoke(req: LiteRevokeReq, request: Request) -> dict[str, Any]:
     try:
         pool.conn.execute(
             "DELETE FROM turn_rewards WHERE experience_id = ?", (eid,))
+    except sqlite3.OperationalError:
+        pass
+    try:
+        from . import rag as rag_mod
+
+        rag_mod.remove_experience_index(pool.conn, eid)
     except sqlite3.OperationalError:
         pass
 
@@ -1630,12 +1821,8 @@ async def user_bind_script(request: Request) -> dict[str, Any]:
     # uploads each session privately. acl=private is hardcoded in the
     # Python script; users physically cannot make these uploads public
     # via this command.
-    extract_cmd = (
-        f"curl -fsSL {base.rstrip('/')}/session-extractor/run.sh | "
-        f"EXP_AGENT_NAME='{cred['agent_name']}' "
-        f"EXP_AGENT_SECRET='{cred['secret']}' "
-        f"EXP_BASE_URL='{base.rstrip('/')}' "
-        f"bash"
+    extract_cmd = _users_mod.render_backfill_script(
+        base_url=base, agent_name=cred["agent_name"], secret=cred["secret"],
     )
     return {
         "agent_name": cred["agent_name"],
@@ -1668,6 +1855,25 @@ class PairingCodeCreateReq(BaseModel):
 class PairingCodeClaimReq(BaseModel):
     code: str = Field(..., description="One-time code from the web portal")
     agent_name: str = Field("", description="Optional local agent label override")
+
+
+class ProjectCreateReq(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    slug: str | None = Field(None, max_length=80)
+
+
+class ProjectInviteReq(BaseModel):
+    email: str
+    role: str = "member"
+    ttl_seconds: int = Field(7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
+
+
+class ProjectInviteAcceptReq(BaseModel):
+    token: str
+
+
+class ProjectGrantReq(BaseModel):
+    include_high_sensitivity: bool = False
 
 
 @app.get("/v1/users/me/api-keys", tags=["api-keys"])
@@ -1763,6 +1969,152 @@ async def plugin_pair(req: PairingCodeClaimReq) -> dict[str, Any]:
     payload["api_key"] = raw
     payload["warning"] = "save locally only — this key will not be shown again"
     return payload
+
+
+# ----- Project pools ---------------------------------------------------------
+
+
+@app.get("/v1/projects", tags=["projects"])
+async def projects_list(request: Request) -> dict[str, Any]:
+    from . import projects as projects_mod
+
+    pool = _pool()
+    actor = getattr(request.state, "agent_name", None)
+    if actor:
+        owner = projects_mod.agent_owner(pool.conn, actor)
+        return {"projects": projects_mod.list_projects_for_owner(pool.conn, owner=owner)}
+    user = _current_user_or_401(request)
+    return {"projects": projects_mod.list_projects_for_user(pool.conn, user_id=user.user_id)}
+
+
+@app.post("/v1/projects", status_code=201, tags=["projects"])
+async def projects_create(req: ProjectCreateReq, request: Request) -> dict[str, Any]:
+    from . import projects as projects_mod
+
+    user = _current_user_or_401(request)
+    pool = _pool()
+    try:
+        return projects_mod.create_project(
+            pool.conn,
+            user_id=user.user_id,
+            name=req.name,
+            slug=req.slug,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/v1/projects/{project_ref}", tags=["projects"])
+async def projects_get(project_ref: str, request: Request) -> dict[str, Any]:
+    from . import projects as projects_mod
+
+    user = _current_user_or_401(request)
+    pool = _pool()
+    try:
+        return projects_mod.get_project_details(
+            pool.conn,
+            user_id=user.user_id,
+            project_ref=project_ref,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@app.post("/v1/projects/{project_ref}/invites", status_code=201, tags=["projects"])
+async def projects_invite(
+    project_ref: str,
+    req: ProjectInviteReq,
+    request: Request,
+) -> dict[str, Any]:
+    from . import projects as projects_mod
+
+    user = _current_user_or_401(request)
+    pool = _pool()
+    try:
+        return projects_mod.create_invite(
+            pool.conn,
+            user_id=user.user_id,
+            project_ref=project_ref,
+            email=req.email,
+            role=req.role,
+            ttl_seconds=req.ttl_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@app.post("/v1/projects/invites/accept", tags=["projects"])
+async def projects_accept_invite(
+    req: ProjectInviteAcceptReq,
+    request: Request,
+) -> dict[str, Any]:
+    from . import projects as projects_mod
+
+    user = _current_user_or_401(request)
+    pool = _pool()
+    try:
+        return projects_mod.accept_invite(
+            pool.conn,
+            user_id=user.user_id,
+            email=user.email,
+            token=req.token,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@app.post("/v1/projects/{project_ref}/grants/me", tags=["projects"])
+async def projects_grant_me(
+    project_ref: str,
+    req: ProjectGrantReq,
+    request: Request,
+) -> dict[str, Any]:
+    from . import projects as projects_mod
+
+    user = _current_user_or_401(request)
+    pool = _pool()
+    owner = projects_mod.user_owner(pool.conn, user.user_id)
+    try:
+        return projects_mod.grant_owner(
+            pool.conn,
+            user_id=user.user_id,
+            project_ref=project_ref,
+            owner=owner,
+            include_high_sensitivity=req.include_high_sensitivity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@app.delete("/v1/projects/{project_ref}/grants/{owner}", tags=["projects"])
+async def projects_revoke_grant(
+    project_ref: str,
+    owner: str,
+    request: Request,
+) -> dict[str, Any]:
+    from . import projects as projects_mod
+
+    user = _current_user_or_401(request)
+    pool = _pool()
+    try:
+        return projects_mod.revoke_owner_grant(
+            pool.conn,
+            user_id=user.user_id,
+            project_ref=project_ref,
+            owner=owner,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
 
 # ----- API protocol doc + OpenAPI security schemes --------------------------

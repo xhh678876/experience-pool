@@ -47,7 +47,10 @@ ASK first only when: sensitivity looks high (credentials/PII), user
 wants team:/public, or user already said "don't upload" this session.
 
 Search before solved-before tasks:
-    ~/.experience-pool/bin/exp search --q "<one-line>" --top-k 5
+    ~/.experience-pool/bin/exp rag-context --q "<local task>" --scope personal --top-k 3
+
+When recall returns an event_id, send one task-boundary reward with
+`exp reuse-feedback`: +1 helped, 0 unused/irrelevant, -1 misleading.
 
 Full contract: ~/.experience-pool/bin/agent-contract.md
 or skill `experience-pool` (auto-loaded).

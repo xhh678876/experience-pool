@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "@/components/ui/link";
 import {
+  canManageExperience,
   getAuditsForTarget,
   getChildren,
   getExperience,
@@ -54,8 +55,12 @@ export default async function ExperienceDetailPage({
 }) {
   const { id } = await params;
   const sp = await searchParams;
+  const canManage = await canManageExperience(id);
+  const visibleTabs = canManage
+    ? TABS
+    : TABS.filter((item) => item.key !== "audit" && item.key !== "lineage");
   const requestedTab = sp.tab ?? "card";
-  const tab = TABS.some((t) => t.key === requestedTab)
+  const tab = visibleTabs.some((t) => t.key === requestedTab)
     ? (requestedTab as (typeof TABS)[number]["key"])
     : "card";
 
@@ -64,12 +69,15 @@ export default async function ExperienceDetailPage({
 
   const reward = getLatestReward(id);
   const updates = getQUpdates(id);
-  const parents = getParents(id);
-  const children = getChildren(id);
-  const audits = getAuditsForTarget(id);
+  const parents = canManage ? getParents(id) : [];
+  const children = canManage ? getChildren(id) : [];
+  const audits = canManage ? getAuditsForTarget(id) : [];
   const lineageIds = [...parents.map((e) => e.parent_id), ...children.map((e) => e.child_id)];
   const lineageNodes = getExperiencesByIds(lineageIds);
-  const trajectory = await readTrajectory(exp.trajectory_path);
+  const trajectory = await readTrajectory(exp.trajectory_path, {
+    includeRaw: canManage,
+    exposePath: canManage,
+  });
   const currentPath = `/experiences/${id}${tab === "card" ? "" : `?tab=${tab}`}`;
 
   return (
@@ -148,7 +156,7 @@ export default async function ExperienceDetailPage({
 
       <div className="border-b">
         <nav className="flex gap-1 overflow-x-auto">
-          {TABS.map((t) => {
+          {visibleTabs.map((t) => {
             const params = new URLSearchParams();
             if (t.key !== "card") params.set("tab", t.key);
             const href = `/experiences/${id}${params.toString() ? `?${params.toString()}` : ""}`;
@@ -182,7 +190,7 @@ export default async function ExperienceDetailPage({
       ) : null}
 
       {tab === "trajectory" ? (
-        <TrajectoryTab trajectory={trajectory} path={exp.trajectory_path} />
+        <TrajectoryTab trajectory={trajectory} path={canManage ? exp.trajectory_path : null} />
       ) : null}
 
       {tab === "lineage" ? (
@@ -198,7 +206,7 @@ export default async function ExperienceDetailPage({
 
       {tab === "audit" ? <AuditTab audits={audits} /> : null}
 
-      <ActionBar id={id} experience={exp} returnTo={currentPath} />
+      {canManage ? <ActionBar id={id} experience={exp} returnTo={currentPath} /> : null}
     </div>
   );
 }

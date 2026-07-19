@@ -142,6 +142,37 @@ def test_push_search_install_roundtrip(tmp_path):
     pool.close()
 
 
+def test_private_skill_search_and_install_are_owner_scoped(tmp_path):
+    skill_dir = write_skill(
+        tmp_path,
+        "private-csv-helper",
+        description="Private CSV reconciliation workflow for quarterly ledgers.",
+    )
+    pool = ExperiencePool(PoolConfig(root=tmp_path / "pool"))
+    pool.register_agent("alice", "platform")
+    pool.register_agent("bob", "platform")
+    pool.push_skill("alice", skill_dir, sensitivity="low", acl="private")
+
+    alice_hits = pool.search_skills(
+        "quarterly csv reconciliation", top_k=5, viewer_name="alice"
+    )
+    bob_hits = pool.search_skills(
+        "quarterly csv reconciliation", top_k=5, viewer_name="bob"
+    )
+    assert [hit["name"] for hit in alice_hits] == ["private-csv-helper"]
+    assert bob_hits == []
+
+    with pytest.raises(ValueError, match="not found"):
+        pool.install_skill(
+            "private-csv-helper", tmp_path / "bob-install", agent_name="bob"
+        )
+    installed = pool.install_skill(
+        "private-csv-helper", tmp_path / "alice-install", agent_name="alice"
+    )
+    assert installed["name"] == "private-csv-helper"
+    pool.close()
+
+
 def test_uses_skill_credit_propagates(tmp_path):
     skill_dir = write_skill(tmp_path, "csv-helper")
     pool = ExperiencePool(PoolConfig(root=tmp_path / "pool"))

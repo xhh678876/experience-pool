@@ -1,13 +1,16 @@
 import Link from "@/components/ui/link";
+import { notFound } from "next/navigation";
 import { Database, Gauge, Shield, TrendingUp, Users, Lock, Cpu, Coins, Sparkles, Layers3 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { getMvpStats, listAgents } from "@/lib/mvp-queries";
 import { getDashboardStats, getUsageStats, getCrystalStats, listCrystallizedSkills } from "@/lib/queries";
 import { formatDate, shortId } from "@/lib/utils";
+import { isCurrentAdmin } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
+  if (!(await isCurrentAdmin())) notFound();
   const mvp = getMvpStats();
   const dash = getDashboardStats();
   const agents = listAgents();
@@ -22,7 +25,7 @@ export default async function AdminPage() {
           <Gauge className="h-4 w-4 text-cyan-700" />
           <span className="font-semibold">池统计</span>
           <span className="text-muted-foreground">
-            · 只读看板 · 公开数据 · 不需身份
+            · 只读运维看板 · 仅管理员
           </span>
         </div>
       </section>

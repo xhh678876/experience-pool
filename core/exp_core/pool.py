@@ -20,6 +20,8 @@ workers in /gateway and /workers are the same logic with infra split out.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import statistics
 import uuid
@@ -42,24 +44,42 @@ SCRIPT_SIM_THRESHOLD = 0.78
 
 ALPHA = 0.2  # credit assignment learning rate
 DIMS = ("outcome", "intent", "execution", "orchestration", "expression")
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
 class PoolConfig:
     root: Path = field(default_factory=lambda: Path.home() / ".experience-pool")
+    db_path_override: Path | None = None
+    trajectories_dir_override: Path | None = None
     w_similarity: float = 0.55
     w_q: float = 0.35
     c_exploration: float = 0.10
     short_traj_turns: int = 4
     ensemble_reuse_threshold: int = 10
 
+    @classmethod
+    def from_env(cls) -> "PoolConfig":
+        root = Path(
+            os.getenv("EXP_ROOT", str(Path.home() / ".experience-pool"))
+        ).expanduser()
+        db_path = os.getenv("EXP_DB_PATH")
+        trajectories_dir = os.getenv("EXP_TRAJECTORIES_DIR")
+        return cls(
+            root=root,
+            db_path_override=Path(db_path).expanduser() if db_path else None,
+            trajectories_dir_override=(
+                Path(trajectories_dir).expanduser() if trajectories_dir else None
+            ),
+        )
+
     @property
     def db_path(self) -> Path:
-        return self.root / "pool.db"
+        return self.db_path_override or self.root / "pool.db"
 
     @property
     def trajectories_dir(self) -> Path:
-        return self.root / "trajectories"
+        return self.trajectories_dir_override or self.root / "trajectories"
 
 
 def _new_id() -> str:
@@ -77,6 +97,11 @@ def _normalize_ingest_acl(acl: str) -> str:
     return "private"
 
 
+def _sanitizer_blocks_review(*, acl: str, sanitization_status: str) -> bool:
+    """Private rows are sanitized and audited, but not held out of recall."""
+    return sanitization_status == "human_review" and acl != "private"
+
+
 class ExperiencePool:
     def __init__(
         self,
@@ -84,8 +109,9 @@ class ExperiencePool:
         *,
         sanitize_rules: RuleSet | None = None,
     ):
-        self.config = config or PoolConfig()
+        self.config = config or PoolConfig.from_env()
         self.config.root.mkdir(parents=True, exist_ok=True)
+        self.config.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.config.trajectories_dir.mkdir(parents=True, exist_ok=True)
         # `timeout=` raises sqlite's default 5s busy timeout to 30s so concurrent
         # writers across uvicorn workers wait their turn instead of erroring out
@@ -93,26 +119,27 @@ class ExperiencePool:
         self.conn = sqlite3.connect(self.config.db_path, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 30000")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")
+        self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
         self._apply_lite_migrations()
-        # Email-based user accounts (sit on top of agents).
-        try:
-            from . import users as _users
-            _users.init_schema(self.conn)
-        except Exception:
-            pass
-        # API keys (Bearer-token alternative to HMAC).
-        try:
-            from . import api_keys as _api_keys
-            _api_keys.init_schema(self.conn)
-        except Exception:
-            pass
-        # Quality / fingerprint / metrics columns (Ultron-borrowed).
-        try:
-            from . import quality as _q
-            _q.ensure_quality_columns(self.conn)
-        except Exception:
-            pass
+        # These schemas are part of the production contract. Failing startup is
+        # safer than serving a partially initialized pool that accepts uploads
+        # but cannot authenticate, index, or revoke them correctly.
+        from . import api_keys as _api_keys
+        from . import projects as _projects
+        from . import quality as _q
+        from . import rag as _rag
+        from . import reuse_feedback as _reuse_feedback
+        from . import users as _users
+
+        _users.init_schema(self.conn)
+        _api_keys.init_schema(self.conn)
+        _q.ensure_quality_columns(self.conn)
+        _projects.init_schema(self.conn)
+        _rag.ensure_schema(self.conn)
+        _reuse_feedback.ensure_schema(self.conn)
         self.conn.commit()
         # Load rules once at startup; tests can inject a custom RuleSet.
         self._sanitize_rules = sanitize_rules or load_rules()
@@ -216,7 +243,7 @@ class ExperiencePool:
         # surfaced anything, so we mutate `trajectory` to the sanitized copy.
         # If anything was redacted we keep the original on disk as
         # `<eid>.raw.json` for reviewer audit.
-        sanitized_trajectory = self._run_sanitizer(eid, trajectory, sensitivity, traj_path)
+        sanitized_trajectory = self._run_sanitizer(eid, trajectory, sensitivity, traj_path, acl)
         trajectory = sanitized_trajectory  # downstream stages use the cleaned copy
 
         # Inline pipeline.
@@ -229,6 +256,16 @@ class ExperiencePool:
         self._judge_and_persist(eid, trajectory, card, sensitivity)
 
         self._embed_and_index(eid, card, task_type=task_type, acl=acl)
+        rag_indexed = False
+        rag_index_error: str | None = None
+        try:
+            from . import rag as rag_mod
+            rag_mod.ensure_schema(self.conn)
+            rag_mod.rebuild_experience(self.conn, eid)
+            rag_indexed = True
+        except Exception as exc:
+            rag_index_error = str(exc)[:300]
+            LOG.exception("RAG indexing failed for experience %s", eid)
 
         # Credit is applied BEFORE dedup. The parents earned the credit because
         # the agent declared they used them, regardless of whether the resulting
@@ -238,7 +275,10 @@ class ExperiencePool:
         skills_mod.apply_skill_credit(self.conn, eid, alpha=ALPHA)
 
         self._maybe_merge(eid, card, task_type=task_type)
-        return self._serialize(self._get(eid))
+        result = self._serialize(self._get(eid))
+        result["rag_indexed"] = rag_indexed
+        result["rag_index_error"] = rag_index_error
+        return result
 
     # ----- sanitize -----
     def _run_sanitizer(
@@ -247,6 +287,7 @@ class ExperiencePool:
         trajectory: list[dict[str, Any]],
         sensitivity: str,
         traj_path: Path,
+        acl: str,
     ) -> list[dict[str, Any]]:
         """Run the three-layer sanitizer.
 
@@ -275,7 +316,7 @@ class ExperiencePool:
         # Block auto-approval when human review is required. The judge stage
         # may later relax to `auto_approved`; we override that back to pending
         # at the end of the pipeline if status was human_review.
-        if result.status == "human_review":
+        if _sanitizer_blocks_review(acl=acl, sanitization_status=result.status):
             self.conn.execute(
                 "UPDATE experiences SET review_status = 'pending' WHERE experience_id = ?",
                 (eid,),
@@ -425,7 +466,8 @@ class ExperiencePool:
         # If the sanitizer routed this experience to human review, keep it
         # pending regardless of judge stability.
         sanitization_status = self._get(eid)["sanitization_status"]
-        if sanitization_status == "human_review":
+        acl = self._get(eid)["acl"]
+        if _sanitizer_blocks_review(acl=acl, sanitization_status=sanitization_status):
             review_status = "pending"
         elif unstable:
             review_status = "pending"
@@ -779,13 +821,20 @@ class ExperiencePool:
             sensitivity=sensitivity,
         )
 
-    def search_skills(self, query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
+    def search_skills(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        viewer_name: str | None = None,
+    ) -> list[dict[str, Any]]:
         from . import skills as skills_mod
         return skills_mod.search_skills(
             self.conn, query, top_k=top_k,
             w_similarity=self.config.w_similarity,
             w_q=self.config.w_q,
             c_exploration=self.config.c_exploration,
+            viewer_name=viewer_name,
         )
 
     def install_skill(

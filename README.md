@@ -1,5 +1,7 @@
 # Experience Pool
 
+> 新用户接入 CC / Codex：请直接阅读[《Experience Pool 新用户接入手册》](docs/GETTING_STARTED.md)，包含注册、插件安装、首次上传、自动上传、自动召回和脱敏实机截图。
+
 面向企业/团队内网、可支撑 100+ agent 的共享经验池。**完整产品由三个部分协同构成**：
 
 1. **一个 Claude Code Skill**，位于 `dist/claude-skill/`（自动安装到 `~/.claude/skills/experience-pool`）。
@@ -157,6 +159,19 @@ EXP_UI_PUBLIC_URL=https://<your-public-ui-host>/proxy/3002 \
 
 该脚本会验证 `/v1/plugin/package`、`/plugins/expool.tgz`、`/plugins/install.sh`
 以及 `/plugins` UI 页面，过程中不绑定凭据、不上传轨迹、也不启用自动上传。
+
+当前官方 agent 插件仓库是 <https://github.com/xhh678876/expool-mcp-plugin>，
+npm 包名是 `@haohui666/expool-plugin`。平台的 `/plugins` 页面会展示这个源码仓库、
+npm 安装命令和内网 tarball 安装命令。部署时推荐在同级插件仓库执行：
+
+```bash
+cd ../expool-mcp-plugin
+EXPOOL_PORTAL_ROOT=../experience-pool npm run release:artifact
+```
+
+该命令会把最新版 tarball 同步到平台的 `dist-public/plugins/expool.tgz`，
+随后 `/v1/plugin/package`、`/plugins/expool.tgz` 和 `/plugins/install.sh`
+都会指向同一份当前插件包。
 
 **单机模式（Standalone）**（无需 Docker、无需任何基础设施）。SQLite + 文件系统 + 进程内向量。通过 `claude` CLI 调用真实 LLM。
 

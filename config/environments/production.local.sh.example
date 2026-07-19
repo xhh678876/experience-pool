@@ -1,0 +1,11 @@
+# Copy to production.local.sh (git-ignored) and adjust for this host.
+# exp_default keeps explicitly exported process variables at highest priority.
+
+exp_default EXP_ROOT "/srv/expool"
+exp_default EXP_UI_PUBLIC_URL "https://portal.example.com"
+exp_default EXP_PUBLIC_BASE_URL "https://api.example.com"
+exp_default EXP_BIND_BASE_URL "$EXP_PUBLIC_BASE_URL"
+
+# Optional sibling checkout locations for multi-repo release workflows.
+# exp_default EXP_PLUGIN_REPO "/srv/src/expool-mcp-plugin"
+# exp_default EXP_FLEET_REPO "/srv/src/claude-fleet"

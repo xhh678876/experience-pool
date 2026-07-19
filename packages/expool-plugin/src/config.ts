@@ -1,9 +1,9 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_BASE = "http://127.0.0.1:3080";
+const DEFAULT_BASE = "https://expool.clawsii.com";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
 
@@ -16,8 +16,24 @@ function gatewayFromUiPublicUrl(): string | undefined {
   return `${ui.slice(0, idx)}/proxy/3080`;
 }
 
+function isLoopbackBase(base: string | undefined): boolean {
+  return /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)(?::|\/|$)/i.test(base ?? "");
+}
+
 function firstExisting(paths: string[]): string | undefined {
   return paths.find((p) => existsSync(p));
+}
+
+function baseFromPluginConfig(credDir: string): string | undefined {
+  const path = join(credDir, "plugin.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const base = typeof parsed.base === "string" ? parsed.base.trim() : "";
+    return base || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function defaultVendorCli(): string {
@@ -48,18 +64,22 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
+  const credDir = process.env.EXPOOL_CRED_DIR || join(homedir(), ".config", "expool");
+  const uiGateway = gatewayFromUiPublicUrl();
+  const explicitBase =
+    process.env.EXPOOL_BASE ||
+    process.env.EXP_BIND_BASE_URL ||
+    process.env.EXP_PUBLIC_BASE_URL;
+  const configuredBase = baseFromPluginConfig(credDir);
+  const preferredBase = explicitBase || configuredBase;
   const base =
-    (
-      process.env.EXPOOL_BASE ||
-      process.env.EXP_BIND_BASE_URL ||
-      process.env.EXP_PUBLIC_BASE_URL ||
-      gatewayFromUiPublicUrl() ||
-      DEFAULT_BASE
+    (isLoopbackBase(preferredBase) && uiGateway
+      ? uiGateway
+      : preferredBase || uiGateway || DEFAULT_BASE
     ).trim() || DEFAULT_BASE;
 
   const pluginRoot = process.env.EXPOOL_PLUGIN_ROOT || defaultPluginRoot();
   const vendoredCli = process.env.EXPOOL_VENDOR_CLI || defaultVendorCli();
-  const credDir = process.env.EXPOOL_CRED_DIR || join(homedir(), ".config", "expool");
   const stateRoot = process.env.EXPOOL_STATE_ROOT || join(homedir(), ".local", "share", "expool");
 
   return {

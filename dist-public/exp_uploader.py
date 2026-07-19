@@ -9,7 +9,7 @@ high-confidence client-side sanitizer, and HMAC-signs an upload to
 travel together so the server can reconstruct the complete session.
 
 Supported sources:
-    claude-code     ~/.claude/projects/**/*.jsonl  (also openclaw forks)
+    claude-code     ~/.claude/projects/**/*.jsonl  (also openclaw-sjtu)
     hermes          ~/.hermes/sessions/*.json[l]   (skips request_dump_*)
     agents-chat     ~/agents-chat/messages.db      (groups by thread_id)
     cursor          ~/Library/Application Support/Cursor/User/**/state.vscdb
@@ -23,11 +23,11 @@ Usage:
     exp_uploader push --session <id-or-path> [--source X] [--task ...] [--acl ...]
     exp_uploader push-latest [--source auto] [--acl private]
     exp_uploader push-all --source X [--since 2026-04-01] [--limit 50]
-    exp_uploader push-file --file traj.json [--acl private]
+    exp_uploader push-file --file traj.json [--acl public]
     exp_uploader whoami
 
 Env:
-    EXP_BASE_URL       gateway URL (default from EXP_BIND_BASE_URL or http://127.0.0.1:8080)
+    EXP_BASE_URL       gateway URL (default from EXP_BIND_BASE_URL or https://expool.clawsii.com)
     EXP_API_KEY        Bearer API key minted from the portal
     EXP_AGENT_NAME     agent identifier (override register)
     EXP_AGENT_SECRET   HMAC secret (override register)
@@ -37,7 +37,7 @@ Credentials are stored at $EXP_CRED_DIR/<agent>.json or api-key.json (mode 0600)
 """
 from __future__ import annotations
 
-__version__ = "0.2.23"
+__version__ = "0.3.3"
 
 import argparse
 import base64
@@ -73,7 +73,7 @@ DEFAULT_BASE_URL = (
     or os.environ.get("EXP_BIND_BASE_URL")
     or os.environ.get("EXP_PUBLIC_BASE_URL")
     or _gateway_from_ui_public_url()
-    or "http://127.0.0.1:8080"
+    or "https://expool.clawsii.com"
 )
 DEFAULT_CRED_DIR = Path(
     os.environ.get("EXP_CRED_DIR", str(Path.home() / ".experience-pool" / "credentials"))
@@ -146,7 +146,7 @@ _RULES: list[tuple[str, re.Pattern[str], str, str]] = [
     ("ipv6",               re.compile(r"\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b"),         "<IP>",            "low"),
 
     # --- Path → username strip (LOW) -------------------------------------
-    # /Users/someuser/foo  →  /Users/<USER>/foo
+    # /Users/xiehaohui/foo  →  /Users/<USER>/foo
     ("home_path",          _HOME_RE,                                                            "<HOMEDIR>/",      "low"),
 ]
 
@@ -242,6 +242,50 @@ class Session:
         }
 
 
+def _iter_text_lines(path: Path) -> Iterable[str]:
+    """Yield a potentially huge JSONL file without retaining its raw text."""
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        yield from handle
+
+
+def _clip_runtime_content(text: str, limit: int) -> str:
+    if limit <= 0 or len(text) <= limit:
+        return text
+    marker = f"\n\n[... truncated {len(text) - limit} chars of runtime output ...]\n\n"
+    room = max(200, limit - len(marker))
+    head = max(120, int(room * 0.7))
+    return text[:head] + marker + text[-(room - head):]
+
+
+def _compact_session_segment(turns: list[Turn], max_chars: int) -> list[Turn]:
+    """Bound transport noise while keeping the task's beginning and outcome."""
+    total = sum(len(turn.content or "") for turn in turns)
+    if max_chars <= 0 or total <= max_chars:
+        return turns
+    per_role = (
+        ("tool", max(2_000, min(48_000, max_chars // 8))),
+        ("assistant", max(4_000, min(64_000, max_chars // 6))),
+    )
+    for role, limit in per_role:
+        for turn in turns:
+            if total <= max_chars:
+                break
+            if turn.role != role:
+                continue
+            before = len(turn.content or "")
+            turn.content = _clip_runtime_content(turn.content or "", limit)
+            total -= max(0, before - len(turn.content))
+    if total > max_chars:
+        per_turn = max(1_000, max_chars // max(1, len(turns)))
+        for turn in turns:
+            if total <= max_chars:
+                break
+            before = len(turn.content or "")
+            turn.content = _clip_runtime_content(turn.content or "", per_turn)
+            total -= max(0, before - len(turn.content))
+    return turns
+
+
 # ---------------------------------------------------------------------------
 # Adapter: Claude Code (~/.claude/projects/<encoded-cwd>/<uuid>.jsonl)
 # ---------------------------------------------------------------------------
@@ -251,7 +295,7 @@ class ClaudeCodeAdapter:
     that stores transcript JSONL files in <root>/<encoded-cwd>/<uuid>.jsonl.
 
     Roots are configurable via $EXP_CLAUDE_ROOTS (comma-separated). Defaults
-    cover ~/.claude/projects and ~/.openclaw/projects.
+    cover ~/.claude/projects, ~/.openclaw/projects, ~/.openclaw-sjtu/projects.
     """
 
     name = "claude-code"
@@ -264,6 +308,8 @@ class ClaudeCodeAdapter:
         candidates = [
             Path.home() / ".claude" / "projects",
             Path.home() / ".openclaw" / "projects",
+            Path.home() / ".openclaw-sjtu" / "projects",
+            Path.home() / "openclaw-sjtu" / "data" / "projects",
         ]
         return [p for p in candidates if p.is_dir()]
 
@@ -342,7 +388,6 @@ class ClaudeCodeAdapter:
         single-turn approach used in claude_sft_delivery/extractor/scanner.py
         and builder.py — emit user/assistant/tool turns in file order.
         """
-        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         latest_version = ""
         latest_model = ""
         latest_cwd = ""
@@ -350,7 +395,9 @@ class ClaudeCodeAdapter:
         ended_at = ""
         turns: list[Turn] = []
 
-        for raw in lines:
+        for raw in _iter_text_lines(path):
+            if not raw.strip():
+                continue
             try:
                 obj = json.loads(raw)
             except (json.JSONDecodeError, ValueError):
@@ -463,6 +510,79 @@ class ClaudeCodeAdapter:
             extra={"source_path": str(path)},
         )
 
+    @classmethod
+    def parse_tasks(
+        cls,
+        ident: str | Path,
+        *,
+        max_turns: int = 240,
+        max_chars: int = 4 * 1024 * 1024,
+    ) -> list[Session]:
+        """Split a long Claude transcript into stable, parent-linked tasks."""
+        path = (
+            Path(ident).expanduser()
+            if Path(ident).expanduser().is_file()
+            else cls.resolve_session(str(ident))
+        )
+        parent = cls.parse(path)
+        total_chars = sum(len(turn.content or "") for turn in parent.trajectory)
+        if len(parent.trajectory) <= max_turns and total_chars <= max_chars:
+            return [parent]
+
+        segments: list[Session] = []
+        active: list[Turn] = []
+        active_chars = 0
+        active_start = 0
+
+        def finish(turn_end: int) -> None:
+            nonlocal active, active_chars, active_start
+            if not active:
+                return
+            index = len(segments) + 1
+            segment_id = f"seg-{index:04d}"
+            compacted = _compact_session_segment(active, max_chars)
+            segments.append(
+                Session(
+                    agent_type=parent.agent_type,
+                    session_id=f"{parent.session_id}:{segment_id}",
+                    started_at=active[0].ts or parent.started_at,
+                    ended_at=active[-1].ts or parent.ended_at,
+                    model=parent.model,
+                    cwd=parent.cwd,
+                    agent_version=parent.agent_version,
+                    trajectory=compacted,
+                    extra={
+                        **parent.extra,
+                        "parent_session_id": parent.session_id,
+                        "segment_id": segment_id,
+                        "source_turn_start": active_start,
+                        "source_turn_end": turn_end,
+                        "task_status": "complete",
+                        "stored_chars": sum(len(turn.content or "") for turn in compacted),
+                    },
+                )
+            )
+            active = []
+            active_chars = 0
+            active_start = turn_end + 1
+
+        for turn_index, turn in enumerate(parent.trajectory):
+            starts_new_task = turn.role == "user" and _is_meaningful_task_text(turn.content)
+            over_target = len(active) >= max_turns or active_chars >= max_chars
+            if active and starts_new_task and over_target:
+                finish(turn_index - 1)
+                active_start = turn_index
+            active.append(turn)
+            active_chars += len(turn.content or "")
+            has_summary = bool(
+                re.search(r"(?im)^\s*\[task-summary\]\s*[:：]", turn.content or "")
+            )
+            hard_limit = len(active) >= max_turns * 2 or active_chars >= max_chars * 2
+            if has_summary or hard_limit:
+                finish(turn_index)
+        finish(len(parent.trajectory) - 1)
+        return segments
+
 
 # ---------------------------------------------------------------------------
 # Adapter: Cursor (state.vscdb SQLite + protobuf blobs).
@@ -532,8 +652,8 @@ class CursorAdapter:
             raise SystemExit(
                 "[cursor] Cursor session extraction needs the cursor_sft_delivery\n"
                 "extractor (it parses the protobuf-encoded v13 schema). Either:\n"
-                "  1. clone your cursor_sft_delivery extractor checkout under\n"
-                "     ~/cursor_sft_delivery, or\n"
+                "  1. clone https://expool.clawsii.com/cursor_sft_delivery (or your\n"
+                "     internal mirror) under ~/cursor_sft_delivery, or\n"
                 "  2. run that pipeline yourself and pass --source generic with\n"
                 "     the resulting v13_training_data_enriched.jsonl"
             )
@@ -898,10 +1018,8 @@ class AgentsChatAdapter:
         for row in rows:
             mid, sender, recipient, content, attachments, workflow, stage, ts = row[:8]
             senders.add(sender)
-            # Map sender→role: the human user is "user"; agents are "assistant".
-            # Human sender names are configurable via EXP_HUMAN_SENDERS (comma-separated).
-            _humans = {s.strip().lower() for s in os.environ.get("EXP_HUMAN_SENDERS", "user,human").split(",") if s.strip()}
-            role = "user" if (sender or "").strip().lower() in _humans else "assistant"
+            # Map sender→role: anything that's the human user is "user"; agents "assistant"
+            role = "assistant" if sender not in {"xiehaohui", "xiaohui", "user", "human"} else "user"
             tag = f"[{sender}→{recipient}{f' /{workflow}/{stage}' if workflow else ''}] "
             turns.append(Turn(role=role, content=tag + (content or ""), ts=ts or ""))
         return Session(
@@ -1098,6 +1216,151 @@ class OpenInterpreterAdapter:
 # Adapter: Codex CLI (~/.codex/sessions/*.json[l])
 # ---------------------------------------------------------------------------
 
+CODEX_TOOL_OUTPUT_CHARS = int(os.environ.get("EXP_CODEX_TOOL_OUTPUT_CHARS", "12000"))
+CODEX_MESSAGE_CHARS = int(os.environ.get("EXP_CODEX_MESSAGE_CHARS", "48000"))
+CODEX_REASONING_CHARS = int(os.environ.get("EXP_CODEX_REASONING_CHARS", "16000"))
+CODEX_TASK_CHARS = int(os.environ.get("EXP_CODEX_TASK_CHARS", "1200000"))
+
+
+def _clip_codex_content(text: Any, limit: int) -> str:
+    value = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+    if limit <= 0 or len(value) <= limit:
+        return value
+    marker = f"\n\n[... truncated {len(value) - limit} chars from runtime output ...]\n\n"
+    available = max(200, limit - len(marker))
+    head = max(120, int(available * 0.7))
+    tail = max(80, available - head)
+    return value[:head] + marker + value[-tail:]
+
+
+def _compact_codex_turns(turns: list[Turn]) -> tuple[list[Turn], dict[str, int]]:
+    """Bound runtime dumps while preserving user goals, actions and outcomes."""
+    original_chars = sum(len(t.content or "") for t in turns)
+    truncated = 0
+    for turn in turns:
+        limit = CODEX_MESSAGE_CHARS
+        if turn.role == "tool":
+            limit = CODEX_TOOL_OUTPUT_CHARS
+        elif (turn.content or "").startswith("💭 思考"):
+            limit = CODEX_REASONING_CHARS
+        clipped = _clip_codex_content(turn.content or "", limit)
+        if clipped != (turn.content or ""):
+            truncated += 1
+            turn.content = clipped
+
+    total = sum(len(t.content or "") for t in turns)
+    if total > CODEX_TASK_CHARS:
+        # Tool output is the least useful part for storage/retrieval. Shrink it
+        # first, then reasoning. User prompts, tool arguments and final answers
+        # remain intact unless the task is still over the hard budget.
+        for role, marker, limit in (
+            ("tool", "", 1800),
+            ("assistant", "💭 思考", 3200),
+            ("assistant", "", 12000),
+        ):
+            for turn in turns:
+                if total <= CODEX_TASK_CHARS:
+                    break
+                if turn.role != role:
+                    continue
+                if marker and not (turn.content or "").startswith(marker):
+                    continue
+                if not marker and role == "assistant" and (turn.content or "").startswith("💭 思考"):
+                    continue
+                before = len(turn.content or "")
+                clipped = _clip_codex_content(turn.content or "", limit)
+                if len(clipped) < before:
+                    turn.content = clipped
+                    total -= before - len(clipped)
+                    truncated += 1
+
+    return turns, {
+        "original_chars": original_chars,
+        "stored_chars": sum(len(t.content or "") for t in turns),
+        "truncated_turns": truncated,
+    }
+
+
+def _codex_response_turns(payload: dict[str, Any], ts: str) -> list[Turn]:
+    ptype = payload.get("type")
+    if ptype == "message":
+        role = {"developer": "system", "tool": "tool"}.get(
+            payload.get("role"), payload.get("role")
+        )
+        if role not in ("user", "assistant", "system", "tool"):
+            return []
+        content = payload.get("content", "")
+        text_parts: list[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") in ("input_text", "output_text", "text"):
+                    text_parts.append(item.get("text", "") or "")
+                elif item.get("type") in ("input_image", "image"):
+                    text_parts.append("[image]")
+        merged = "\n".join(part for part in text_parts if part.strip())
+        return [Turn(role=role, content=merged, ts=ts)] if merged.strip() else []
+
+    if ptype == "reasoning":
+        parts: list[str] = []
+        summary = payload.get("summary") or []
+        if isinstance(summary, list):
+            for item in summary:
+                if isinstance(item, dict):
+                    value = item.get("text") or ""
+                else:
+                    value = item if isinstance(item, str) else ""
+                if value.strip():
+                    parts.append(value)
+        inline = payload.get("content")
+        if isinstance(inline, str) and inline.strip():
+            parts.append(inline)
+        if parts:
+            return [Turn(role="assistant", content="💭 思考\n\n" + "\n\n".join(parts), ts=ts)]
+        return []
+
+    if ptype in {"function_call", "custom_tool_call"}:
+        name = payload.get("name", "tool")
+        raw_input = payload.get("arguments") if ptype == "function_call" else payload.get("input")
+        try:
+            parsed_input = json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+        except (json.JSONDecodeError, TypeError):
+            parsed_input = raw_input
+        return [Turn(
+            role="assistant",
+            content="",
+            ts=ts,
+            tool_calls=[{
+                "id": payload.get("call_id", ""),
+                "name": name,
+                "input": parsed_input,
+                "kind": ptype,
+            }],
+        )]
+
+    if ptype in {"function_call_output", "custom_tool_call_output"}:
+        output = payload.get("output", "")
+        display = output
+        if isinstance(output, str):
+            try:
+                parsed = json.loads(output)
+                if isinstance(parsed, dict):
+                    display = parsed.get("output", parsed.get("content", parsed))
+            except json.JSONDecodeError:
+                pass
+        if not isinstance(display, str):
+            display = json.dumps(display, ensure_ascii=False)
+        return [Turn(
+            role="tool",
+            content=display,
+            ts=ts,
+            tool_result_for=payload.get("call_id", ""),
+        )]
+    return []
+
 class CodexAdapter:
     name = "codex"
 
@@ -1127,168 +1390,221 @@ class CodexAdapter:
         } for p in files[:limit]]
 
     @classmethod
-    def parse(cls, ident: str) -> Session:
-        p = Path(ident).expanduser()
-        if not p.is_file():
-            # rglob can't handle absolute paths — strip to basename for lookup
-            stem = Path(ident).name
-            for f in cls.root().rglob(f"{stem}*"):
-                p = f
-                break
-        if not p.is_file():
-            raise FileNotFoundError(f"codex session not found: {ident}")
-        turns: list[Turn] = []
-        text = p.read_text(encoding="utf-8")
-        # Codex rollouts are JSONL — each line is `{type, payload}`. We use
-        # `response_item` records as the source of truth (event_msg lines
-        # duplicate the same content) and emit one turn per logical block:
-        # message text, reasoning (thinking), function_call (tool_use),
-        # function_call_output (tool_result).
-        role_norm = {"developer": "system", "tool": "tool"}
-        model = ""
-        started_at = ""
-        ended_at = ""
-        cwd = ""
+    def resolve_session(cls, ident: str) -> Path:
+        path = Path(ident).expanduser()
+        if path.is_file():
+            return path
+        stem = Path(ident).name
+        for candidate in cls.root().rglob(f"{stem}*"):
+            if candidate.is_file():
+                return candidate
+        raise FileNotFoundError(f"codex session not found: {ident}")
 
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(d, dict):
-                continue
-            ts = d.get("timestamp", "") or d.get("ended_at", "")
-            if ts:
-                if not started_at:
-                    started_at = ts
-                ended_at = ts
-            if d.get("type") == "session_meta":
-                meta_payload = d.get("payload") or {}
-                if isinstance(meta_payload, dict):
-                    model = model or meta_payload.get("model", "")
-                    cwd = cwd or meta_payload.get("cwd", "")
-            elif d.get("type") == "turn_context":
-                ctx_payload = d.get("payload") or {}
-                if isinstance(ctx_payload, dict):
-                    model = model or ctx_payload.get("model", "")
-                    cwd = cwd or ctx_payload.get("cwd", "")
-
-            # legacy direct {role, content} fallback
-            if "role" in d and "content" in d:
-                role = role_norm.get(d.get("role"), d.get("role"))
-                content = d.get("content")
-                if isinstance(content, list):
-                    parts = [
-                        str(b.get("text", ""))
-                        for b in content
-                        if isinstance(b, dict) and b.get("type") in ("text", "input_text", "output_text")
-                    ]
-                    content = "\n".join(parts)
-                if role in ("user", "assistant", "system", "tool") and isinstance(content, str) and content.strip():
-                    turns.append(Turn(role=role, content=content, ts=ts))
-                continue
-
-            if d.get("type") != "response_item":
-                continue
-            payload = d.get("payload") or {}
-            if not isinstance(payload, dict):
-                continue
-            ptype = payload.get("type")
-
-            if ptype == "message":
-                role = role_norm.get(payload.get("role"), payload.get("role"))
-                if role not in ("user", "assistant", "system", "tool"):
-                    continue
-                content = payload.get("content", "")
-                text_parts: list[str] = []
-                if isinstance(content, str):
-                    text_parts.append(content)
-                elif isinstance(content, list):
-                    for c in content:
-                        if not isinstance(c, dict):
-                            continue
-                        if c.get("type") in ("input_text", "output_text", "text"):
-                            text_parts.append(c.get("text", "") or "")
-                merged = "\n".join(p for p in text_parts if p.strip())
-                if merged.strip():
-                    turns.append(Turn(role=role, content=merged, ts=ts))
-
-            elif ptype == "reasoning":
-                # `summary` is human-readable thinking text; `encrypted_content`
-                # is opaque base64 — drop it.
-                summ = payload.get("summary") or []
-                parts = []
-                if isinstance(summ, list):
-                    for s in summ:
-                        if isinstance(s, dict):
-                            t_ = s.get("text") or ""
-                            if t_.strip():
-                                parts.append(t_)
-                        elif isinstance(s, str) and s.strip():
-                            parts.append(s)
-                inline = payload.get("content")
-                if isinstance(inline, str) and inline.strip():
-                    parts.append(inline)
-                if parts:
-                    turns.append(Turn(
-                        role="assistant",
-                        content="💭 思考\n\n" + "\n\n".join(parts),
-                        ts=ts,
-                    ))
-
-            elif ptype == "function_call":
-                name = payload.get("name", "tool")
-                args_raw = payload.get("arguments", "")
-                try:
-                    args_obj = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-                except Exception:
-                    args_obj = args_raw
-                turns.append(Turn(
-                    role="assistant",
-                    content="",
-                    ts=ts,
-                    tool_calls=[{
-                        "id": payload.get("call_id", ""),
-                        "name": name,
-                        "input": args_obj,
-                    }],
-                ))
-
-            elif ptype == "function_call_output":
-                output = payload.get("output", "")
-                disp = output
-                if isinstance(output, str):
+    @classmethod
+    def _metadata(cls, path: Path) -> dict[str, str]:
+        meta = {"model": "", "cwd": "", "agent_version": "", "started_at": ""}
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                for index, raw in enumerate(handle):
+                    if index >= 256:
+                        break
                     try:
-                        parsed = json.loads(output)
-                        if isinstance(parsed, dict):
-                            if "output" in parsed:
-                                disp = parsed["output"]
-                            elif "content" in parsed:
-                                disp = parsed["content"]
-                    except Exception:
-                        pass
-                if not isinstance(disp, str):
-                    disp = json.dumps(disp, ensure_ascii=False)
-                turns.append(Turn(
-                    role="tool",
-                    content=disp,
-                    ts=ts,
-                    tool_result_for=payload.get("call_id", ""),
-                ))
+                        record = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = str(record.get("timestamp") or "")
+                    if ts and not meta["started_at"]:
+                        meta["started_at"] = ts
+                    payload = record.get("payload") or {}
+                    if not isinstance(payload, dict):
+                        continue
+                    if record.get("type") == "session_meta":
+                        meta["cwd"] = meta["cwd"] or str(payload.get("cwd") or "")
+                        meta["agent_version"] = meta["agent_version"] or str(payload.get("cli_version") or "")
+                        meta["model"] = meta["model"] or str(payload.get("model") or "")
+                    elif record.get("type") == "turn_context":
+                        meta["cwd"] = str(payload.get("cwd") or meta["cwd"])
+                        meta["model"] = str(payload.get("model") or meta["model"])
+                    if meta["cwd"] and meta["model"] and meta["agent_version"]:
+                        break
+        except OSError:
+            pass
+        return meta
 
+    @classmethod
+    def parse_tasks(
+        cls,
+        ident: str,
+        *,
+        start_offset: int = 0,
+        include_incomplete: bool = False,
+        max_tasks: int | None = None,
+    ) -> tuple[list[Session], int]:
+        """Stream completed Codex tasks and return a safe resume byte offset.
+
+        Codex keeps appending many independent tasks to one rollout file. The
+        returned offset stops before an unfinished task, so the next daemon
+        tick can resume without re-reading the full file or losing that task.
+        """
+        path = cls.resolve_session(ident)
+        metadata = cls._metadata(path)
+        tasks: list[Session] = []
+        active: dict[str, Any] | None = None
+        fallback_turns: list[Turn] = []
+        safe_offset = max(0, start_offset)
+        partial_offset: int | None = None
+
+        def finish(status: str, end_offset: int, ended_at: str) -> None:
+            nonlocal active, safe_offset
+            if active is None:
+                safe_offset = end_offset
+                return
+            turns, compact = _compact_codex_turns(active["turns"])
+            turn_id = str(active.get("turn_id") or active["start_offset"])
+            if turns:
+                tasks.append(Session(
+                    agent_type=cls.name,
+                    session_id=f"{path.stem}:{turn_id}",
+                    started_at=str(active.get("started_at") or metadata["started_at"]),
+                    ended_at=ended_at or str(active.get("last_ts") or ""),
+                    model=str(active.get("model") or metadata["model"] or "codex-unknown"),
+                    cwd=str(active.get("cwd") or metadata["cwd"] or path.parent),
+                    agent_version=metadata["agent_version"],
+                    trajectory=turns,
+                    extra={
+                        "source_path": str(path),
+                        "parent_session_id": path.stem,
+                        "codex_turn_id": turn_id,
+                        "byte_start": int(active["start_offset"]),
+                        "byte_end": end_offset,
+                        "task_status": status,
+                        **compact,
+                    },
+                ))
+            safe_offset = end_offset
+            active = None
+
+        with path.open("rb") as handle:
+            handle.seek(max(0, start_offset))
+            while True:
+                line_start = handle.tell()
+                raw = handle.readline()
+                if not raw:
+                    break
+                line_end = handle.tell()
+                try:
+                    record = json.loads(raw.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
+                    if not raw.endswith(b"\n"):
+                        partial_offset = line_start
+                        break
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                ts = str(record.get("timestamp") or record.get("ended_at") or "")
+                payload = record.get("payload") or {}
+                payload = payload if isinstance(payload, dict) else {}
+                ptype = payload.get("type")
+
+                if record.get("type") == "event_msg" and ptype == "task_started":
+                    if active is not None:
+                        if include_incomplete:
+                            finish("superseded", line_start, str(active.get("last_ts") or ts))
+                        else:
+                            safe_offset = int(active["start_offset"])
+                            break
+                    active = {
+                        "turn_id": payload.get("turn_id") or "",
+                        "start_offset": line_start,
+                        "started_at": ts,
+                        "last_ts": ts,
+                        "model": metadata["model"],
+                        "cwd": metadata["cwd"],
+                        "turns": [],
+                    }
+                    continue
+
+                if record.get("type") == "turn_context":
+                    if active is not None:
+                        active["model"] = str(payload.get("model") or active["model"])
+                        active["cwd"] = str(payload.get("cwd") or active["cwd"])
+                        active["last_ts"] = ts or active["last_ts"]
+                    continue
+
+                if record.get("type") == "response_item":
+                    parsed = _codex_response_turns(payload, ts)
+                    if active is not None:
+                        active["turns"].extend(parsed)
+                        active["last_ts"] = ts or active["last_ts"]
+                    elif start_offset == 0:
+                        fallback_turns.extend(parsed)
+                    continue
+
+                if record.get("type") == "event_msg" and ptype in {"task_complete", "turn_aborted"}:
+                    if active is not None:
+                        finish("complete" if ptype == "task_complete" else "aborted", line_end, ts)
+                        if max_tasks is not None and len(tasks) >= max_tasks:
+                            break
+                    else:
+                        safe_offset = line_end
+
+            eof_offset = handle.tell()
+
+        if active is not None:
+            if include_incomplete:
+                finish("open", partial_offset or eof_offset, str(active.get("last_ts") or ""))
+            else:
+                safe_offset = int(active["start_offset"])
+        elif partial_offset is not None:
+            safe_offset = min(safe_offset or partial_offset, partial_offset)
+        elif not tasks and fallback_turns and start_offset == 0:
+            turns, compact = _compact_codex_turns(fallback_turns)
+            tasks.append(Session(
+                agent_type=cls.name,
+                session_id=path.stem,
+                started_at=metadata["started_at"],
+                ended_at=_dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                model=metadata["model"] or "codex-unknown",
+                cwd=metadata["cwd"] or str(path.parent),
+                agent_version=metadata["agent_version"],
+                trajectory=turns,
+                extra={"source_path": str(path), "byte_start": 0, "byte_end": eof_offset, **compact},
+            ))
+            safe_offset = eof_offset
+        elif active is None and partial_offset is None and (max_tasks is None or len(tasks) < max_tasks):
+            safe_offset = max(safe_offset, eof_offset)
+        return tasks, safe_offset
+
+    @classmethod
+    def parse(cls, ident: str) -> Session:
+        path = cls.resolve_session(ident)
+        tasks, _ = cls.parse_tasks(str(path), include_incomplete=True)
+        if not tasks:
+            metadata = cls._metadata(path)
+            return Session(
+                agent_type=cls.name,
+                session_id=path.stem,
+                started_at=metadata["started_at"],
+                ended_at=_dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                model=metadata["model"] or "codex-unknown",
+                cwd=metadata["cwd"] or str(path.parent),
+                agent_version=metadata["agent_version"],
+                trajectory=[],
+                extra={"source_path": str(path)},
+            )
+        if len(tasks) == 1 and tasks[0].session_id == path.stem:
+            return tasks[0]
+        turns = [turn for task in tasks for turn in task.trajectory]
         return Session(
             agent_type=cls.name,
-            session_id=p.stem,
-            started_at=started_at,
-            ended_at=ended_at or _dt.datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
-            model=model or "codex-unknown",
-            cwd=cwd or str(p.parent),
-            agent_version="",
+            session_id=path.stem,
+            started_at=tasks[0].started_at,
+            ended_at=tasks[-1].ended_at,
+            model=tasks[-1].model,
+            cwd=tasks[-1].cwd,
+            agent_version=tasks[-1].agent_version,
             trajectory=turns,
-            extra={"source_path": str(p)},
+            extra={"source_path": str(path), "task_count": len(tasks)},
         )
 
 
@@ -1708,16 +2024,89 @@ def _looks_bad_title(label: str) -> bool:
     return False
 
 
+_TASK_WRAPPER_PREFIXES = (
+    "# agents.md instructions",
+    "<environment_context>",
+    "<permissions instructions>",
+    "<collaboration_mode>",
+    "<subagent_notification>",
+    "<local-command-caveat>",
+    "<command-message>",
+    "<command-name>",
+    "<system-reminder>",
+    "<transcript>",
+)
+_TRIVIAL_TASK_MESSAGES = {
+    "", "1", "ok", "okay", "yes", "no", "hi", "hello", "hey",
+    "thanks", "thank you", "continue", "go on", "done",
+    "你好", "您好", "在吗", "在不在", "继续", "继续做", "继续吧", "好的",
+    "好", "可以", "行", "收到", "谢谢", "完成", "搞定", "快点", "开始吧",
+}
+_GOAL_OBJECTIVE_RE = re.compile(
+    r"<objective>\s*(.*?)\s*</objective>", re.IGNORECASE | re.DOTALL,
+)
+
+
+def _clean_task_user_text(content: str) -> str:
+    """Return the retrievable task hidden inside runtime wrapper messages."""
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    objective = _GOAL_OBJECTIVE_RE.search(text)
+    if objective:
+        text = objective.group(1).strip()
+    elif text.lower().startswith(_TASK_WRAPPER_PREFIXES):
+        return ""
+    # Runtime image placeholders are useful only when accompanied by an
+    # actual request. A bare placeholder has no searchable task semantics.
+    if re.fullmatch(r"(?:<image[^>]*>\s*)+", text, re.IGNORECASE):
+        return ""
+    return text
+
+
+def _is_meaningful_task_text(content: str) -> bool:
+    text = _clean_task_user_text(content)
+    if not text:
+        return False
+    normalized = re.sub(r"[\s\W_]+", " ", text, flags=re.UNICODE).strip().lower()
+    if normalized in _TRIVIAL_TASK_MESSAGES:
+        return False
+    # A one-character acknowledgement or menu selection is not an
+    # independently retrievable task. Keep short technical identifiers.
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) < 3 and not re.search(r"[A-Za-z][0-9]|[0-9][A-Za-z]", compact):
+        return False
+    return True
+
+
+def _session_has_retrievable_task(session: Session) -> bool:
+    if any(
+        t.role == "user" and _is_meaningful_task_text(t.content)
+        for t in session.trajectory
+    ):
+        return True
+    return bool(_extract_task_summary_title(session.trajectory))
+
+
+def _turn_value(turn: Any, key: str, default: Any = None) -> Any:
+    if isinstance(turn, dict):
+        return turn.get(key, default)
+    return getattr(turn, key, default)
+
+
 def _pack_transcript(trajectory: list[Any], max_chars: int = 6000) -> str:
     out: list[str] = []
     used = 0
     for t in trajectory:
-        role = getattr(t, "role", None) or t.get("role", "")
-        content = (getattr(t, "content", None) or t.get("content", "") or "").strip()
-        tcs = getattr(t, "tool_calls", None) or t.get("tool_calls") or []
+        role = _turn_value(t, "role", "") or ""
+        content = str(_turn_value(t, "content", "") or "").strip()
+        tcs = _turn_value(t, "tool_calls", []) or []
         if not content and not tcs:
             continue
         if role == "user":
+            content = _clean_task_user_text(content)
+            if not _is_meaningful_task_text(content):
+                continue
             line = f"[用户] {content[:600]}"
         elif role == "assistant":
             if tcs:
@@ -1837,7 +2226,7 @@ def _extract_task_summary_title(trajectory: list[Any]) -> str:
     limited, or unavailable.
     """
     for t in reversed(trajectory):
-        content = getattr(t, "content", None) or t.get("content", "") or ""
+        content = _turn_value(t, "content", "") or ""
         if not content:
             continue
         matches = _TASK_SUMMARY_RE.findall(str(content))
@@ -1881,23 +2270,17 @@ def build_lite_card(
             "tool_calls": clean_tool_calls,
             "tool_result_for": t.tool_result_for,
         })
-        if (
-            t.role == "user"
-            and not query
-            and body.strip()
-            and not body.lstrip().startswith((
-                "<environment_context>",
-                "<local-command-caveat>",
-                "<command-message>",
-                "<command-name>",
-            ))
-        ):
-            query = body
+        if t.role == "user" and not query:
+            clean_user = _clean_task_user_text(body)
+            if _is_meaningful_task_text(clean_user):
+                query = clean_user[:4000]
         elif t.role == "assistant" and body.strip():
             steps.append(body[:280])
             outcome = body
 
-    intent = _extract_task_summary_title(sanitized_traj) or _derive_title(query, sanitized_traj)
+    task_summary = _extract_task_summary_title(sanitized_traj)
+    query = query or task_summary
+    intent = task_summary or _derive_title(query, sanitized_traj)
     return {
         "card": {
             "query": query or "(no user turn)",
@@ -1941,6 +2324,8 @@ def http_request(
         api_key = cred.get("api_key") or cred.get("bearer")
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+            if cred.get("agent_name"):
+                headers["X-Agent-Name"] = cred["agent_name"]
         else:
             headers["X-Agent-Name"] = cred["agent_name"]
             headers["X-Signature"] = sign(cred["secret"], method, path, body_bytes)
@@ -2284,6 +2669,161 @@ def cmd_search(args: argparse.Namespace) -> int:
     quota = res.get("quota") or {}
     if quota.get("community_locked_hint"):
         print(f"\n  ℹ {quota.get('hint','')}")
+    return 0
+
+
+def cmd_rag_context(args: argparse.Namespace) -> int:
+    """POST /v1/rag/context — server-side chunk RAG + ACL + context packing."""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found. run `exp register` or bind first.")
+    body = {"q": args.q, "top_k": args.top_k, "scope": args.scope}
+    if args.task_type:
+        body["task_type"] = args.task_type
+    if args.project:
+        body["project"] = args.project
+    res = http_request(args.base, "POST", "/v1/rag/context", body=body, cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    context = res.get("context") or ""
+    if context:
+        print(context)
+    else:
+        print("(no rag context)")
+    return 0
+
+
+def _split_arg_values(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for value in values or []:
+        for part in str(value).split(","):
+            part = part.strip()
+            if part:
+                out.append(part)
+    return out
+
+
+def _last_recall_paths() -> list[Path]:
+    paths: list[Path] = []
+    if os.environ.get("EXPOOL_RUNTIME_DIR"):
+        paths.append(Path(os.environ["EXPOOL_RUNTIME_DIR"]) / "last-recall.json")
+    if os.environ.get("EXP_CRED_DIR"):
+        paths.append(Path(os.environ["EXP_CRED_DIR"]) / "runtime" / "last-recall.json")
+    paths.append(Path.home() / ".config" / "expool" / "runtime" / "last-recall.json")
+    paths.append(DEFAULT_CRED_DIR / "runtime" / "last-recall.json")
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.expanduser())
+        if key not in seen:
+            deduped.append(path.expanduser())
+            seen.add(key)
+    return deduped
+
+
+def _load_last_recall() -> dict[str, Any]:
+    for path in _last_recall_paths():
+        try:
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return {}
+
+
+def cmd_reuse_feedback(args: argparse.Namespace) -> int:
+    """POST /v1/reuse/feedback — mark recalled RAG chunks helpful/harmful."""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found. run `exp register` or bind first.")
+
+    event_id = args.event_id.strip()
+    last = _load_last_recall() if (args.last or not event_id) else {}
+    if not event_id:
+        event_id = str(last.get("event_id") or "").strip()
+    if not event_id:
+        raise SystemExit("missing --event-id (or use --last after an automatic recall)")
+
+    chunk_ids = _split_arg_values(args.chunk_id)
+    exp_ids = _split_arg_values(args.experience_id)
+    if last and not chunk_ids and not exp_ids:
+        chunk_ids = [
+            str(c.get("chunk_id") or "").strip()
+            for c in (last.get("chunks") or [])
+            if str(c.get("chunk_id") or "").strip()
+        ]
+    items: list[dict[str, Any]] = []
+    for chunk_id in chunk_ids:
+        items.append(
+            {
+                "chunk_id": chunk_id,
+                "reward": args.reward,
+                "confidence": args.confidence,
+                "used": not args.not_used,
+                "reason": args.reason,
+            }
+        )
+    for exp_id in exp_ids:
+        items.append(
+            {
+                "experience_id": exp_id,
+                "reward": args.reward,
+                "confidence": args.confidence,
+                "used": not args.not_used,
+                "reason": args.reason,
+            }
+        )
+
+    body: dict[str, Any] = {
+        "event_id": event_id,
+        "confidence": args.confidence,
+        "used": not args.not_used,
+        "reason": args.reason,
+        "feedback_source": args.source,
+        "final_status": args.final_status,
+    }
+    if items:
+        body["items"] = items
+    else:
+        body["reward"] = args.reward
+
+    res = http_request(args.base, "POST", "/v1/reuse/feedback", body=body, cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+
+    print(
+        f"feedback stored event={str(res.get('event_id') or event_id)[:8]} "
+        f"items={res.get('items_updated', 0)} experiences={res.get('experiences_updated', 0)}"
+    )
+    for update in (res.get("updates") or [])[:5]:
+        eid = str(update.get("experience_id") or "")[:8]
+        delta = (update.get("delta") or {}).get("outcome", 0.0)
+        reward = update.get("reward", args.reward)
+        print(f"  {eid} reward={float(reward):+.2f} delta_outcome={float(delta):+.4f}")
+    return 0
+
+
+def cmd_projects(args: argparse.Namespace) -> int:
+    """GET /v1/projects — list project pools visible to this credential."""
+    cred = load_credential()
+    if cred is None:
+        raise SystemExit("no credential found. run `exp register` or bind first.")
+    res = http_request(args.base, "GET", "/v1/projects", cred=cred)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    projects = res.get("projects") or []
+    if not projects:
+        print("(no projects)")
+        return 0
+    for i, p in enumerate(projects, 1):
+        slug = p.get("slug") or p.get("project_id")
+        name = p.get("name") or slug
+        relation = p.get("role") or p.get("relation") or "project"
+        owners = p.get("shared_owners", "?")
+        print(f"{i:2}. {slug:24} {relation:8} owners={owners}  {name}")
     return 0
 
 
@@ -2746,7 +3286,9 @@ def cmd_bind(args: argparse.Namespace) -> int:
 def cmd_list_sessions(args: argparse.Namespace) -> int:
     src = detect_source(args.source)
     adapter = ADAPTERS[src]
-    rows = adapter.list_sessions(limit=args.limit)
+    all_rows = adapter.list_sessions(limit=100_000)
+    total = len(all_rows)
+    rows = all_rows[: max(0, args.limit)]
     if getattr(args, "with_model", False):
         enriched: list[dict[str, Any]] = []
         for row in rows:
@@ -2762,7 +3304,11 @@ def cmd_list_sessions(args: argparse.Namespace) -> int:
                         item["model"] = item.get("model") or "unknown"
             enriched.append(item)
         rows = enriched
-    print(json.dumps({"source": src, "sessions": rows}, indent=2, ensure_ascii=False))
+    print(json.dumps(
+        {"source": src, "total": total, "sessions": rows},
+        indent=2,
+        ensure_ascii=False,
+    ))
     return 0
 
 
@@ -2845,6 +3391,7 @@ def _post_rewards(base: str, cred: dict[str, str], experience_id: str,
 
 
 def _push(session: Session, args: argparse.Namespace) -> int:
+    setattr(args, "_push_outcome", "pending")
     cred = load_credential()
     if cred is None:
         raise SystemExit("no credential found. run `exp_uploader register` first.")
@@ -2892,6 +3439,7 @@ def _push(session: Session, args: argparse.Namespace) -> int:
             "reason": reason,
             "pending_saved_to": pending_path,
         }, ensure_ascii=False))
+        setattr(args, "_push_outcome", "skipped")
         return 0
     # ------------------------------------------------------------------
 
@@ -2932,6 +3480,7 @@ def _push(session: Session, args: argparse.Namespace) -> int:
     if body["tools"] is None:
         body.pop("tools")
     res = http_request(args.base, "POST", "/v1/lite/push", body, cred=cred)
+    setattr(args, "_push_outcome", "uploaded")
     res_min = {
         "experience_id": res.get("experience_id"),
         "review_status": res.get("review_status"),
@@ -2961,7 +3510,13 @@ def cmd_push(args: argparse.Namespace) -> int:
 def cmd_push_latest(args: argparse.Namespace) -> int:
     src = detect_source(args.source)
     ident = _adapter_latest_path_or_id(src)
-    session = _adapter_parse(src, ident)
+    if src == CodexAdapter.name:
+        tasks, _ = CodexAdapter.parse_tasks(ident, include_incomplete=True)
+        if not tasks:
+            raise SystemExit("latest codex rollout has no task trajectory")
+        session = tasks[-1]
+    else:
+        session = _adapter_parse(src, ident)
     return _push(session, args)
 
 
@@ -3040,6 +3595,283 @@ def _save_state(state: dict[str, Any]) -> None:
     p.chmod(0o600)
 
 
+def _daemon_progress_line(source: str, current: int, total: int, sid: str, action: str) -> str:
+    width = 18
+    total = max(1, total)
+    current = min(max(0, current), total)
+    filled = int(width * current / total)
+    bar = "#" * filled + "." * (width - filled)
+    pct = int(100 * current / total)
+    return f"[daemon] {source} [{bar}] {current}/{total} {pct:3d}% {sid[:24]}: {action}"
+
+
+def _daemon_sync_codex(
+    rows: list[dict[str, Any]],
+    bookkeeping: dict[str, Any],
+    args: argparse.Namespace,
+    push_ns: argparse.Namespace,
+    *,
+    cap_per_source: int,
+    cap_per_session_kb: int,
+) -> tuple[int, int, int]:
+    """Incrementally upload completed tasks from append-only Codex rollouts."""
+    file_state = bookkeeping.setdefault("file_offsets", {})
+    remembered = list(bookkeeping.get("uploaded_ids", []))
+    remembered_set = set(remembered)
+    uploaded = skipped = failed = 0
+
+    for row in rows:
+        if uploaded >= cap_per_source:
+            break
+        sid = str(row.get("id") or row.get("path") or "")
+        ident = str(row.get("path") or row.get("id") or "")
+        size_bytes = int(row.get("size_bytes") or 0)
+        current = file_state.get(sid) if isinstance(file_state.get(sid), dict) else {}
+        offset = int(current.get("offset") or 0)
+        if size_bytes < offset:
+            # File was rotated/truncated. Re-scan from the beginning; stable
+            # task ids plus server dedup keep this safe.
+            offset = 0
+        if size_bytes and size_bytes <= offset:
+            skipped += 1
+            continue
+
+        remaining = max(1, cap_per_source - uploaded)
+        try:
+            sessions, parsed_offset = CodexAdapter.parse_tasks(
+                ident,
+                start_offset=offset,
+                include_incomplete=False,
+                max_tasks=remaining,
+            )
+        except Exception as exc:
+            failed += 1
+            if args.verbose:
+                print(f"[daemon] codex/{sid[:24]} parse failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            continue
+
+        if not sessions:
+            # Advance over complete non-task metadata, but never past an open
+            # task (parse_tasks deliberately returns its start offset).
+            if parsed_offset > offset:
+                current["offset"] = parsed_offset
+            current["size_bytes"] = size_bytes
+            current["mtime"] = row.get("mtime") or ""
+            file_state[sid] = current
+            skipped += 1
+            continue
+
+        committed_offset = offset
+        for session in sessions:
+            task_id = session.session_id
+            if task_id in remembered_set:
+                committed_offset = max(committed_offset, int(session.extra.get("byte_end") or 0))
+                skipped += 1
+                continue
+            if not _session_has_retrievable_task(session):
+                committed_offset = max(committed_offset, int(session.extra.get("byte_end") or 0))
+                remembered.append(task_id)
+                remembered_set.add(task_id)
+                skipped += 1
+                if args.verbose:
+                    print(
+                        _daemon_progress_line(
+                            "codex", uploaded + skipped, len(sessions), task_id,
+                            "skipped runtime wrapper or trivial task",
+                        ),
+                        file=sys.stderr,
+                    )
+                continue
+            stored_kb = int(session.extra.get("stored_chars") or 0) / 1024
+            if stored_kb > cap_per_session_kb:
+                # The parser already compacts runtime output. If a task still
+                # exceeds the configured cap, leave the offset in place so an
+                # operator can retry with a larger limit rather than losing it.
+                skipped += 1
+                if args.verbose:
+                    print(
+                        _daemon_progress_line(
+                            "codex", uploaded + skipped, len(sessions), task_id,
+                            f"task payload {stored_kb:.0f}KB > cap {cap_per_session_kb}KB",
+                        ),
+                        file=sys.stderr,
+                    )
+                break
+            try:
+                if args.verbose:
+                    print(
+                        _daemon_progress_line(
+                            "codex", uploaded + 1, len(sessions), task_id,
+                            f"uploading task ({len(session.trajectory)} turns)",
+                        ),
+                        file=sys.stderr,
+                    )
+                if args.dry_run:
+                    print(f"[dry-run] would upload codex/{task_id} ({len(session.trajectory)} turns)")
+                    outcome = "uploaded"
+                else:
+                    _push(session, push_ns)
+                    outcome = str(getattr(push_ns, "_push_outcome", "uploaded"))
+                if outcome == "uploaded":
+                    uploaded += 1
+                else:
+                    skipped += 1
+                committed_offset = max(committed_offset, int(session.extra.get("byte_end") or 0))
+                remembered.append(task_id)
+                remembered_set.add(task_id)
+            except (SystemExit, Exception) as exc:
+                failed += 1
+                if args.verbose:
+                    print(f"[daemon] codex/{task_id[:24]} failed: {exc}", file=sys.stderr)
+                break
+
+        current["offset"] = committed_offset
+        current["size_bytes"] = size_bytes
+        current["mtime"] = row.get("mtime") or ""
+        file_state[sid] = current
+
+    bookkeeping["uploaded_ids"] = remembered[-5000:]
+    bookkeeping["file_offsets"] = file_state
+    mtimes = [str(row.get("mtime") or "") for row in rows if row.get("mtime")]
+    if mtimes:
+        bookkeeping["last_mtime"] = max(mtimes)
+    return uploaded, skipped, failed
+
+
+def _daemon_sync_claude(
+    rows: list[dict[str, Any]],
+    bookkeeping: dict[str, Any],
+    args: argparse.Namespace,
+    push_ns: argparse.Namespace,
+    *,
+    cap_per_source: int,
+    cap_per_session_kb: int,
+) -> tuple[int, int, int]:
+    """Upload Claude sessions as stable child segments, including appends."""
+    file_state = bookkeeping.setdefault("file_state", {})
+    segment_turn_counts = bookkeeping.setdefault("segment_turn_counts", {})
+    remembered = list(bookkeeping.get("uploaded_ids", []))
+    remembered_set = set(remembered)
+    uploaded = skipped = failed = 0
+
+    def remember(session_id: str, turn_count: int) -> None:
+        if session_id not in remembered_set:
+            remembered.append(session_id)
+            remembered_set.add(session_id)
+        segment_turn_counts[session_id] = turn_count
+
+    for row in rows:
+        if uploaded >= cap_per_source:
+            break
+        sid = str(row.get("id") or row.get("path") or "")
+        ident = str(row.get("path") or row.get("id") or "")
+        mtime = str(row.get("mtime") or "")
+        size_bytes = int(row.get("size_bytes") or 0)
+        current = file_state.get(sid) if isinstance(file_state.get(sid), dict) else {}
+        if (
+            mtime
+            and str(current.get("mtime") or "") >= mtime
+            and int(current.get("size_bytes") or 0) == size_bytes
+        ):
+            skipped += 1
+            continue
+        try:
+            sessions = ClaudeCodeAdapter.parse_tasks(
+                ident,
+                max_turns=max(40, int(os.environ.get("EXP_CLAUDE_SEGMENT_TURNS", "240"))),
+                max_chars=max(64, cap_per_session_kb) * 1024,
+            )
+        except Exception as exc:
+            failed += 1
+            if args.verbose:
+                print(
+                    f"[daemon] claude-code/{sid[:24]} parse failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+            continue
+        completed_file = True
+        for session in sessions:
+            task_id = session.session_id
+            previous_turns = int(segment_turn_counts.get(task_id) or 0)
+            current_turns = len(session.trajectory)
+            if task_id in remembered_set and current_turns <= previous_turns:
+                skipped += 1
+                continue
+            if uploaded >= cap_per_source:
+                completed_file = False
+                break
+            if not _session_has_retrievable_task(session):
+                remember(task_id, current_turns)
+                skipped += 1
+                continue
+            stored_kb = sum(len(turn.content or "") for turn in session.trajectory) / 1024
+            if stored_kb > cap_per_session_kb * 1.05:
+                completed_file = False
+                skipped += 1
+                if args.verbose:
+                    print(
+                        _daemon_progress_line(
+                            "claude-code",
+                            uploaded + skipped,
+                            len(sessions),
+                            task_id,
+                            f"segment payload {stored_kb:.0f}KB > cap {cap_per_session_kb}KB",
+                        ),
+                        file=sys.stderr,
+                    )
+                break
+            try:
+                if args.verbose:
+                    print(
+                        _daemon_progress_line(
+                            "claude-code",
+                            uploaded + 1,
+                            len(sessions),
+                            task_id,
+                            f"uploading segment ({current_turns} turns)",
+                        ),
+                        file=sys.stderr,
+                    )
+                if args.dry_run:
+                    print(
+                        f"[dry-run] would upload claude-code/{task_id} "
+                        f"({current_turns} turns)"
+                    )
+                    outcome = "uploaded"
+                else:
+                    _push(session, push_ns)
+                    outcome = str(getattr(push_ns, "_push_outcome", "uploaded"))
+                if outcome == "uploaded":
+                    uploaded += 1
+                else:
+                    skipped += 1
+                remember(task_id, current_turns)
+            except (SystemExit, Exception) as exc:
+                failed += 1
+                completed_file = False
+                if args.verbose:
+                    print(
+                        f"[daemon] claude-code/{task_id[:24]} failed: {exc}",
+                        file=sys.stderr,
+                    )
+                break
+        if completed_file:
+            file_state[sid] = {"mtime": mtime, "size_bytes": size_bytes}
+
+    bookkeeping["uploaded_ids"] = remembered[-5000:]
+    bookkeeping["file_state"] = file_state
+    bookkeeping["segment_turn_counts"] = {
+        key: segment_turn_counts[key]
+        for key in remembered[-5000:]
+        if key in segment_turn_counts
+    }
+    mtimes = [str(row.get("mtime") or "") for row in rows if row.get("mtime")]
+    if mtimes:
+        bookkeeping["last_mtime"] = max(mtimes)
+    return uploaded, skipped, failed
+
+
 def cmd_daemon_tick(args: argparse.Namespace) -> int:
     """One-shot incremental sync. Designed to be run by launchd / systemd
     every few minutes. Idempotent: tracks uploaded session ids per source
@@ -3094,7 +3926,63 @@ def cmd_daemon_tick(args: argparse.Namespace) -> int:
             continue
         # Sort oldest-first so we upload chronologically.
         rows.sort(key=lambda r: (r.get("mtime") or r.get("ended_at") or ""))
+        if src == ClaudeCodeAdapter.name:
+            uploaded, skipped, failed = _daemon_sync_claude(
+                rows,
+                bookkeeping,
+                args,
+                push_ns,
+                cap_per_source=cap_per_source,
+                cap_per_session_kb=cap_per_session_kb,
+            )
+            bookkeeping["last_tick_uploaded"] = uploaded
+            bookkeeping["last_tick_at"] = started_at
+            summary["sources"][src] = {
+                "uploaded": uploaded,
+                "skipped": skipped,
+                "failed": failed,
+                "available_now": len(rows),
+                "tracked_files": len(bookkeeping.get("file_state", {})),
+            }
+            summary["total_uploaded"] += uploaded
+            summary["total_skipped"] += skipped
+            summary["total_failed"] += failed
+            continue
+        if src == CodexAdapter.name:
+            uploaded, skipped, failed = _daemon_sync_codex(
+                rows,
+                bookkeeping,
+                args,
+                push_ns,
+                cap_per_source=cap_per_source,
+                cap_per_session_kb=cap_per_session_kb,
+            )
+            bookkeeping["last_tick_uploaded"] = uploaded
+            bookkeeping["last_tick_at"] = started_at
+            summary["sources"][src] = {
+                "uploaded": uploaded,
+                "skipped": skipped,
+                "failed": failed,
+                "available_now": len(rows),
+                "tracked_files": len(bookkeeping.get("file_offsets", {})),
+            }
+            summary["total_uploaded"] += uploaded
+            summary["total_skipped"] += skipped
+            summary["total_failed"] += failed
+            continue
+        remaining_rows = [
+            r for r in rows
+            if str(r.get("id") or r.get("path") or "") not in already
+        ]
+        if args.verbose:
+            print(
+                f"[daemon] {src}: scanning {len(rows)} session(s), "
+                f"{len(remaining_rows)} new candidate(s), upload cap={cap_per_source}",
+                file=sys.stderr,
+            )
         uploaded, skipped, failed = 0, 0, 0
+        candidate_seen = 0
+        candidate_total = max(1, len(remaining_rows))
         new_ids: list[str] = []
         last_mtime_seen = bookkeeping.get("last_mtime", "")
         for row in rows:
@@ -3103,52 +3991,100 @@ def cmd_daemon_tick(args: argparse.Namespace) -> int:
             if sid in already:
                 skipped += 1
                 continue
+            candidate_seen += 1
             size_kb = (row.get("size_bytes") or 0) / 1024
             if size_kb and size_kb > cap_per_session_kb:
                 skipped += 1
                 if args.verbose:
-                    print(f"[daemon] {src} {sid[:24]}: skipped (size {size_kb:.0f}KB > cap {cap_per_session_kb}KB)",
-                          file=sys.stderr)
+                    print(
+                        _daemon_progress_line(
+                            src,
+                            candidate_seen,
+                            candidate_total,
+                            sid,
+                            f"skipped size {size_kb:.0f}KB > cap {cap_per_session_kb}KB",
+                        ),
+                        file=sys.stderr,
+                    )
                 continue
             if uploaded >= cap_per_source:
+                if args.verbose:
+                    print(f"[daemon] {src}: upload cap reached ({cap_per_source}); remaining candidates stay queued",
+                          file=sys.stderr)
                 break
             ident = row.get("path") or row.get("id")
             try:
                 session = _adapter_parse(src, ident)
                 if not session.trajectory:
                     skipped += 1
+                    if args.verbose:
+                        print(
+                            _daemon_progress_line(
+                                src, candidate_seen, candidate_total, sid,
+                                "skipped empty trajectory",
+                            ),
+                            file=sys.stderr,
+                        )
                     continue
-                # Skip sessions that are obviously title-prober artifacts:
-                # any session whose first user message is our packed
-                # transcript wrapper (`<transcript>...`) is not a real
-                # user task — it's a self-call from the title summariser.
-                first_user = next(
-                    (t.content for t in session.trajectory if t.role == "user"),
-                    "",
-                )
-                if first_user.lstrip().startswith("<transcript>"):
+                if not _session_has_retrievable_task(session):
                     skipped += 1
                     if args.verbose:
-                        print(f"[daemon] {src} {sid[:24]}: skipped (title-prober artifact)",
-                              file=sys.stderr)
+                        print(
+                            _daemon_progress_line(
+                                src, candidate_seen, candidate_total, sid,
+                                "skipped runtime wrapper or trivial task",
+                            ),
+                            file=sys.stderr,
+                        )
                     continue
+                if args.verbose:
+                    print(
+                        _daemon_progress_line(
+                            src,
+                            candidate_seen,
+                            candidate_total,
+                            sid,
+                            f"uploading {len(session.trajectory)} turn(s)",
+                        ),
+                        file=sys.stderr,
+                    )
                 if args.dry_run:
                     print(f"[dry-run] would upload {src}/{sid} ({len(session.trajectory)} turns)")
                 else:
                     _push(session, push_ns)
                 uploaded += 1
                 new_ids.append(sid)
+                if args.verbose:
+                    print(
+                        _daemon_progress_line(
+                            src, candidate_seen, candidate_total, sid, "done",
+                        ),
+                        file=sys.stderr,
+                    )
                 if mtime > last_mtime_seen:
                     last_mtime_seen = mtime
             except SystemExit as e:
                 failed += 1
                 if args.verbose:
-                    print(f"[daemon] {src} {sid[:24]}: failed ({e})", file=sys.stderr)
+                    print(
+                        _daemon_progress_line(
+                            src, candidate_seen, candidate_total, sid, f"failed {e}",
+                        ),
+                        file=sys.stderr,
+                    )
             except Exception as e:
                 failed += 1
                 if args.verbose:
-                    print(f"[daemon] {src} {sid[:24]}: failed ({type(e).__name__}: {e})",
-                          file=sys.stderr)
+                    print(
+                        _daemon_progress_line(
+                            src,
+                            candidate_seen,
+                            candidate_total,
+                            sid,
+                            f"failed {type(e).__name__}: {e}",
+                        ),
+                        file=sys.stderr,
+                    )
         # Persist bookkeeping (cap remembered ids at 5000 to keep state small).
         all_ids = list(already) + new_ids
         if len(all_ids) > 5000:
@@ -3164,6 +4100,11 @@ def cmd_daemon_tick(args: argparse.Namespace) -> int:
         summary["total_uploaded"] += uploaded
         summary["total_skipped"] += skipped
         summary["total_failed"] += failed
+        if args.verbose:
+            print(
+                f"[daemon] {src}: uploaded={uploaded} skipped={skipped} failed={failed}",
+                file=sys.stderr,
+            )
     state["last_tick_at"] = started_at
     if not args.dry_run:
         _save_state(state)
@@ -3178,6 +4119,10 @@ def cmd_daemon_state(args: argparse.Namespace) -> int:
     for src, info in state.get("by_source", {}).items():
         out["by_source"][src] = {
             "uploaded_count": len(info.get("uploaded_ids", [])),
+            "tracked_files": max(
+                len(info.get("file_offsets", {})),
+                len(info.get("file_state", {})),
+            ),
             "last_mtime": info.get("last_mtime", ""),
             "last_tick_uploaded": info.get("last_tick_uploaded", 0),
             "last_tick_at": info.get("last_tick_at", ""),
@@ -3362,7 +4307,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-per-source", type=int, default=10,
                     help="cap uploads per source per tick (default 10)")
     sp.add_argument("--max-session-kb", type=int, default=4096,
-                    help="skip sessions larger than this (default 4MB)")
+                    help="maximum compacted task/segment payload in KB; "
+                         "large Claude files are split (default 4MB)")
     sp.add_argument("--acl", default="", help="default ACL (default $EXP_AUTO_ACL or private)")
     sp.add_argument("--task", default="", help="default task type (default auto-sync)")
     sp.add_argument("--dry-run", action="store_true")
@@ -3443,15 +4389,48 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     # 插件 / 下游开发友好的查询命令(都支持 --json 给脚本解析)
     # ------------------------------------------------------------------
-    sp = sub.add_parser("search", help="在经验池里做语义检索（支持 personal / community / auto 三种作用域）")
+    sp = sub.add_parser("search", help="在经验池里浏览匹配经验卡（支持 personal / community / auto / project:<slug>）")
     sp.add_argument("--q", required=True, help="查询文本")
     sp.add_argument("--top-k", type=int, default=5)
     sp.add_argument("--scope", default="auto",
-                    choices=["auto", "personal", "community"])
+                    help="auto | personal | community | project:<slug>")
     sp.add_argument("--task-type", default=None,
                     help="只搜某 task_type 下的(可选)")
     sp.add_argument("--json", action="store_true", help="JSON 输出便于脚本解析")
     sp.set_defaults(func=cmd_search)
+
+    sp = sub.add_parser("rag-context",
+                        help="平台侧 RAG 召回：chunk 检索 + ACL + 上下文压缩（推荐给自动召回）")
+    sp.add_argument("--q", required=True, help="查询文本")
+    sp.add_argument("--top-k", type=int, default=3)
+    sp.add_argument("--scope", default="auto",
+                    help="auto | personal | community | project:<slug>")
+    sp.add_argument("--project", default="",
+                    help="项目 slug/id；也可用 --scope project:<slug>")
+    sp.add_argument("--task-type", default=None)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_rag_context)
+
+    sp = sub.add_parser(
+        "reuse-feedback",
+        help="给一次 RAG 召回事件打反馈奖励，并回写经验 Q 值",
+    )
+    sp.add_argument("--event-id", default="", help="event_id returned by rag-context")
+    sp.add_argument("--last", action="store_true", help="use the last automatic recall event")
+    sp.add_argument("--experience-id", action="append", default=[], help="experience id to rate; repeat or comma-separate")
+    sp.add_argument("--chunk-id", action="append", default=[], help="chunk id to rate; repeat or comma-separate")
+    sp.add_argument("--reward", type=float, required=True, help="-1 harmful, 0 neutral, +1 helpful")
+    sp.add_argument("--confidence", type=float, default=0.35, help="confidence in [0,1], default 0.35")
+    sp.add_argument("--reason", default="", help="brief feedback reason")
+    sp.add_argument("--source", default="agent", help="feedback source label, default agent")
+    sp.add_argument("--final-status", default="unknown", help="task outcome label, e.g. success/partial/failed")
+    sp.add_argument("--not-used", action="store_true", help="mark the recalled item as not actually used")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_reuse_feedback)
+
+    sp = sub.add_parser("projects", help="列出当前凭据可用的项目池")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_projects)
 
     sp = sub.add_parser("get",
                         help="按 experience_id 拉取一条经验的完整卡片（LiteCard + 可选 trajectory）")

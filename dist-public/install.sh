@@ -3,10 +3,11 @@
 #
 # Usage:
 #     curl -sSL https://expool.example.com/install | bash
-#     curl -sSL https://expool.example.com/install | EXP_AGENT_NAME=alice EXP_TEAM=platform bash
+#     env EXP_AGENT_NAME=alice EXP_TEAM=platform EXP_BASE_URL=https://expool.example.com \
+#       bash -c 'curl -fsSL "$EXP_BASE_URL/install" | bash'
 #
 # Env:
-#     EXP_BASE_URL       gateway URL (default http://127.0.0.1:8080)
+#     EXP_BASE_URL       gateway URL (default https://expool.clawsii.com)
 #     EXP_AGENT_NAME     agent identifier (default $USER-$(hostname -s))
 #     EXP_TEAM           team for the agent (default "default")
 #     EXP_INSTALL_DIR    where to place the uploader (default ~/.experience-pool)
@@ -14,7 +15,7 @@
 
 set -eu
 
-BASE="${EXP_BASE_URL:-http://127.0.0.1:8080}"
+BASE="${EXP_BASE_URL:-https://expool.clawsii.com}"
 NAME="${EXP_AGENT_NAME:-${USER:-agent}-$(hostname -s 2>/dev/null || hostname)}"
 TEAM="${EXP_TEAM:-default}"
 INSTALL_DIR="${EXP_INSTALL_DIR:-$HOME/.experience-pool}"
@@ -243,18 +244,26 @@ FRONTMATTER
                 CODEX_AGENTS="$HOME/.codex/AGENTS.md"
                 mkdir -p "$(dirname "$CODEX_AGENTS")"
                 MARKER="<!-- experience-pool agent contract — managed by install.sh -->"
-                if [ ! -f "$CODEX_AGENTS" ] || ! grep -qF "$MARKER" "$CODEX_AGENTS"; then
-                    {
-                        echo
-                        echo "$MARKER"
-                        cat "$CONTRACT"
-                        echo
-                        echo "<!-- end experience-pool -->"
-                    } >> "$CODEX_AGENTS"
-                    note "      codex       → $CODEX_AGENTS (appended)"
-                else
-                    note "      codex       → $CODEX_AGENTS (already present)"
-                fi
+                python3 - "$CODEX_AGENTS" "$CONTRACT" "$MARKER" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+contract = Path(sys.argv[2]).read_text(encoding="utf-8").strip()
+marker = sys.argv[3]
+end = "<!-- end experience-pool -->"
+managed = f"{marker}\n{contract}\n\n{end}"
+existing = target.read_text(encoding="utf-8") if target.exists() else ""
+pattern = re.compile(re.escape(marker) + r".*?" + re.escape(end), re.S)
+if pattern.search(existing):
+    updated = pattern.sub(managed, existing)
+else:
+    updated = existing.rstrip() + ("\n\n" if existing.strip() else "") + managed + "\n"
+target.write_text(updated.rstrip() + "\n", encoding="utf-8")
+PY
+                chmod 600 "$CODEX_AGENTS" 2>/dev/null || true
+                note "      codex       → $CODEX_AGENTS (managed block updated)"
                 ;;
             hermes|openclaw)
                 # hermes / openclaw: assume Claude-Code-style skill layout

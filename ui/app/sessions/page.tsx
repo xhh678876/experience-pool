@@ -2,12 +2,19 @@ import Link from "@/components/ui/link";
 import { Boxes, Clock, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { listRecentSessions } from "@/lib/queries";
+import { getCurrentUser } from "@/lib/auth";
 import { formatDate } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
 export default async function SessionsPage() {
-  const sessions = await listRecentSessions(50);
+  const me = await getCurrentUser();
+  const sessions = await listRecentSessions(
+    50,
+    me
+      ? { scope: "personal", viewerName: me.default_agent_name }
+      : { scope: "public" },
+  );
 
   return (
     <div className="flex flex-col gap-6 pb-12">
@@ -16,11 +23,11 @@ export default async function SessionsPage() {
           <Boxes className="h-4 w-4 text-cyan-700" />
           <span className="font-semibold">完整 session 视图</span>
           <span className="text-muted-foreground">
-            · 同一 session 切出来的多段聚合在一起，时间线可视化
+            · {me ? "我的私有池" : "公共池预览"} · 同一 session 切出来的多段聚合在一起
           </span>
         </div>
         <p className="text-xs leading-5 text-muted-foreground">
-          上传时切分器按 marker / 时间空隙 / 关键词 把 session 切成 N 段。这里把它们重新串回去，
+          上传时切分器按 marker / 时间空隙 / 关键词 把 session 切成 N 段。登录后这里默认只看自己的私有经验池，
           能看到一个 session 完整覆盖了哪些任务。
         </p>
       </section>
@@ -34,6 +41,10 @@ export default async function SessionsPage() {
         <ul className="grid gap-3 lg:grid-cols-2">
           {sessions.map((g) => {
             const isMulti = g.segments.length > 1;
+            const totalTurns = g.segments.reduce(
+              (sum, segment) => sum + segment.turn_count,
+              0,
+            );
             const span =
               g.started_at !== g.ended_at
                 ? `${formatDate(g.started_at)} → ${formatDate(g.ended_at)}`
@@ -54,7 +65,7 @@ export default async function SessionsPage() {
                         : "bg-muted text-muted-foreground"
                     }
                   >
-                    {g.segments.length} 段
+                    {g.segments.length} 段 · {totalTurns} turns
                   </Badge>
                   <span className="flex items-center gap-1 text-muted-foreground">
                     <Users className="h-3 w-3" />
@@ -98,6 +109,9 @@ export default async function SessionsPage() {
                         <div className="mt-0.5 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
                           <Badge variant="outline" className="font-mono">
                             {s.task_type}
+                          </Badge>
+                          <Badge variant="outline" className="font-mono">
+                            {s.turn_count} turns
                           </Badge>
                           <Badge
                             className={

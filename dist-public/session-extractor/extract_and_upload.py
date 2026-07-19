@@ -34,6 +34,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -50,6 +51,8 @@ CLAUDE_DIR = Path.home() / ".claude" / "projects"
 CODEX_DIR  = Path.home() / ".codex" / "sessions"
 HERMES_DIR = Path.home() / ".hermes"
 OPENCLAW_DIR = Path.home() / ".openclaw"
+CODEX_TOOL_OUTPUT_CHARS = int(os.environ.get("EXP_CODEX_TOOL_OUTPUT_CHARS", "12000"))
+CODEX_TASK_CHARS = int(os.environ.get("EXP_CODEX_TASK_CHARS", "1200000"))
 
 
 # ---------- adapters: one per agent runtime ---------------------------
@@ -152,6 +155,14 @@ def _split_anthropic_blocks(role: str, content: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _iter_text_lines(path: Path) -> Iterable[str]:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            yield from handle
+    except OSError:
+        return
+
+
 def _parse_jsonl(path: Path) -> list[dict[str, Any]]:
     """Parse a Claude Code session JSONL into a flat trajectory list.
 
@@ -166,11 +177,7 @@ def _parse_jsonl(path: Path) -> list[dict[str, Any]]:
         "last-prompt", "queue-operation", "attachment",
         "file-history-snapshot", "permission-mode", "summary",
     }
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return out
-    for line in text.splitlines():
+    for line in _iter_text_lines(path):
         line = line.strip()
         if not line:
             continue
@@ -189,130 +196,241 @@ def _parse_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _parse_codex_json(path: Path) -> list[dict[str, Any]]:
-    """Codex rollouts (~/.codex/sessions/.../rollout-*.jsonl) are JSONL
-    where each line is `{type, payload}`. We use `response_item` as the
-    source of truth (event_msg duplicates the same content) and emit one
-    turn per logical block — message text, reasoning, function_call,
-    function_call_output. No truncation, no opaque base64 noise.
-    """
-    out: list[dict[str, Any]] = []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return out
-
-    role_norm = {"developer": "system", "tool": "tool"}
-
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(d, dict):
-            continue
-
-        # Direct {role, content} (legacy fallback)
-        if "role" in d and "content" in d:
-            role, content = d.get("role"), d.get("content", "")
-            role = role_norm.get(role, role)
-            if role in ("user", "assistant", "system", "tool"):
-                out.extend(_split_anthropic_blocks(role, content))
-            continue
-
-        if d.get("type") != "response_item":
-            continue
-        payload = d.get("payload")
-        if not isinstance(payload, dict):
-            continue
-        ptype = payload.get("type")
-
-        if ptype == "message":
-            role = payload.get("role")
-            role = role_norm.get(role, role)
-            if role not in ("user", "assistant", "system", "tool"):
+def _compact_claude_segment(
+    trajectory: list[dict[str, Any]], max_chars: int
+) -> list[dict[str, Any]]:
+    total = sum(len(str(turn.get("content") or "")) for turn in trajectory)
+    if max_chars <= 0 or total <= max_chars:
+        return trajectory
+    for role, limit in (
+        ("tool", max(2_000, min(48_000, max_chars // 8))),
+        ("assistant", max(4_000, min(64_000, max_chars // 6))),
+    ):
+        for turn in trajectory:
+            if total <= max_chars:
+                break
+            if turn.get("role") != role:
                 continue
-            content = payload.get("content", "")
-            if isinstance(content, str):
-                if content.strip():
-                    out.append({"role": role, "content": content})
-            elif isinstance(content, list):
-                # codex content blocks: input_text / output_text / image
-                for c in content:
-                    if not isinstance(c, dict):
-                        continue
-                    ct = c.get("type")
-                    if ct in ("input_text", "output_text", "text"):
-                        t = c.get("text") or ""
-                        if t.strip():
-                            out.append({"role": role, "content": t})
-                    elif ct in ("input_image", "image"):
-                        out.append({"role": role, "content": "🖼️ [图片]"})
+            before = len(str(turn.get("content") or ""))
+            turn["content"] = _clip_codex_text(turn.get("content") or "", limit)
+            total -= max(0, before - len(str(turn["content"])))
+    return trajectory
 
-        elif ptype == "reasoning":
-            # `summary` is the human-readable thinking; `encrypted_content`
-            # is opaque base64 (skip).
-            summ = payload.get("summary") or []
-            parts = []
-            if isinstance(summ, list):
-                for s in summ:
-                    if isinstance(s, dict):
-                        t = s.get("text") or ""
-                        if t.strip():
-                            parts.append(t)
-                    elif isinstance(s, str) and s.strip():
-                        parts.append(s)
-            inline = payload.get("content")
-            if isinstance(inline, str) and inline.strip():
-                parts.append(inline)
-            if parts:
-                out.append({
-                    "role": "assistant",
-                    "content": "💭 思考\n\n" + "\n\n".join(parts),
-                })
 
-        elif ptype == "function_call":
-            name = payload.get("name", "?")
-            args_raw = payload.get("arguments", "")
-            # arguments is a JSON STRING — parse + pretty-print
+def _split_claude_trajectory(
+    trajectory: list[dict[str, Any]],
+    *,
+    max_turns: int,
+    max_chars: int,
+) -> list[tuple[str, list[dict[str, Any]], dict[str, Any]]]:
+    if not trajectory:
+        return []
+    total_chars = sum(len(str(turn.get("content") or "")) for turn in trajectory)
+    if len(trajectory) <= max_turns and total_chars <= max_chars:
+        return [("", trajectory, {})]
+
+    segments: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
+    active: list[dict[str, Any]] = []
+    active_chars = 0
+    active_start = 0
+
+    def finish(turn_end: int) -> None:
+        nonlocal active, active_chars, active_start
+        if not active:
+            return
+        segment_id = f"seg-{len(segments) + 1:04d}"
+        compacted = _compact_claude_segment(active, max_chars)
+        segments.append(
+            (
+                segment_id,
+                compacted,
+                {
+                    "segment_id": segment_id,
+                    "source_turn_start": active_start,
+                    "source_turn_end": turn_end,
+                    "task_status": "complete",
+                },
+            )
+        )
+        active = []
+        active_chars = 0
+        active_start = turn_end + 1
+
+    for turn_index, turn in enumerate(trajectory):
+        content = str(turn.get("content") or "")
+        starts_new_task = (
+            turn.get("role") == "user" and _is_meaningful_task_text(content)
+        )
+        if active and starts_new_task and (
+            len(active) >= max_turns or active_chars >= max_chars
+        ):
+            finish(turn_index - 1)
+            active_start = turn_index
+        active.append(turn)
+        active_chars += len(content)
+        has_summary = bool(_TASK_SUMMARY_RE.search(content))
+        hard_limit = len(active) >= max_turns * 2 or active_chars >= max_chars * 2
+        if has_summary or hard_limit:
+            finish(turn_index)
+    finish(len(trajectory) - 1)
+    return segments
+
+
+def _clip_codex_text(value: Any, limit: int) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if limit <= 0 or len(text) <= limit:
+        return text
+    marker = f"\n\n[... truncated {len(text) - limit} chars from runtime output ...]\n\n"
+    room = max(200, limit - len(marker))
+    head = max(120, int(room * 0.7))
+    return text[:head] + marker + text[-(room - head):]
+
+
+def _codex_response_turns(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    ptype = payload.get("type")
+    if ptype == "message":
+        role = {"developer": "system", "tool": "tool"}.get(payload.get("role"), payload.get("role"))
+        if role not in ("user", "assistant", "system", "tool"):
+            return []
+        content = payload.get("content", "")
+        parts: list[str] = []
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") in ("input_text", "output_text", "text"):
+                    parts.append(item.get("text") or "")
+                elif item.get("type") in ("input_image", "image"):
+                    parts.append("[image]")
+        text = "\n".join(part for part in parts if part.strip())
+        return [{"role": role, "content": _clip_codex_text(text, 48000)}] if text.strip() else []
+
+    if ptype == "reasoning":
+        parts: list[str] = []
+        for item in payload.get("summary") or []:
+            value = item.get("text") if isinstance(item, dict) else item
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+        inline = payload.get("content")
+        if isinstance(inline, str) and inline.strip():
+            parts.append(inline)
+        if parts:
+            return [{"role": "assistant", "content": "💭 思考\n\n" + _clip_codex_text("\n\n".join(parts), 16000)}]
+        return []
+
+    if ptype in {"function_call", "custom_tool_call"}:
+        raw_input = payload.get("arguments") if ptype == "function_call" else payload.get("input")
+        try:
+            parsed_input = json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+        except (json.JSONDecodeError, TypeError):
+            parsed_input = raw_input
+        return [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": payload.get("call_id", ""),
+                "name": payload.get("name", "tool"),
+                "input": parsed_input,
+                "kind": ptype,
+            }],
+        }]
+
+    if ptype in {"function_call_output", "custom_tool_call_output"}:
+        output = payload.get("output", "")
+        display = output
+        if isinstance(output, str):
             try:
-                args_obj = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-                args_pretty = json.dumps(args_obj, ensure_ascii=False, indent=2)
-            except Exception:
-                args_pretty = str(args_raw)
-            call_id = payload.get("call_id", "")
-            id_suffix = f"  (id={call_id[:12]})" if call_id else ""
-            out.append({
-                "role": "assistant",
-                "content": f"🔧 调用工具: {name}{id_suffix}\n\n```json\n{args_pretty}\n```",
-            })
+                parsed = json.loads(output)
+                if isinstance(parsed, dict):
+                    display = parsed.get("output", parsed.get("content", parsed))
+            except json.JSONDecodeError:
+                pass
+        return [{
+            "role": "tool",
+            "content": _clip_codex_text(display, CODEX_TOOL_OUTPUT_CHARS),
+            "tool_result_for": payload.get("call_id", ""),
+        }]
+    return []
 
-        elif ptype == "function_call_output":
-            output = payload.get("output", "")
-            call_id = payload.get("call_id", "")
-            id_suffix = f"  (id={call_id[:12]})" if call_id else ""
-            # output is sometimes a JSON-encoded string with a `content`
-            # field — try to flatten that to bare text for readability.
-            disp = output
-            if isinstance(output, str):
-                try:
-                    parsed = json.loads(output)
-                    if isinstance(parsed, dict) and "output" in parsed:
-                        disp = parsed["output"]
-                    elif isinstance(parsed, dict) and "content" in parsed:
-                        disp = parsed["content"]
-                except Exception:
-                    pass
-            if not isinstance(disp, str):
-                disp = json.dumps(disp, ensure_ascii=False)
-            out.append({
-                "role": "tool",
-                "content": f"📤 工具返回{id_suffix}\n\n{disp}",
-            })
 
+def _compact_codex_trajectory(trajectory: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    total = sum(len(str(turn.get("content") or "")) for turn in trajectory)
+    if total <= CODEX_TASK_CHARS:
+        return trajectory
+    for role, limit in (("tool", 1800), ("assistant", 5000)):
+        for turn in trajectory:
+            if total <= CODEX_TASK_CHARS:
+                break
+            if turn.get("role") != role:
+                continue
+            before = len(str(turn.get("content") or ""))
+            clipped = _clip_codex_text(turn.get("content") or "", limit)
+            turn["content"] = clipped
+            total -= max(0, before - len(clipped))
+    return trajectory
+
+
+def _iter_codex_tasks(path: Path, *, include_incomplete: bool = False) -> Iterable[tuple[str, list[dict[str, Any]], dict[str, Any]]]:
+    """Yield task-sized Codex trajectories without loading the rollout file."""
+    active: dict[str, Any] | None = None
+    fallback: list[dict[str, Any]] = []
+    metadata: dict[str, Any] = {"model": "unknown", "cwd": "", "agent_version": ""}
+    try:
+        handle = path.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    with handle:
+        for raw in handle:
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload") or {}
+            payload = payload if isinstance(payload, dict) else {}
+            ptype = payload.get("type")
+            if record.get("type") == "session_meta":
+                metadata["cwd"] = payload.get("cwd") or metadata["cwd"]
+                metadata["agent_version"] = payload.get("cli_version") or metadata["agent_version"]
+                metadata["model"] = payload.get("model") or metadata["model"]
+                continue
+            if record.get("type") == "event_msg" and ptype == "task_started":
+                if active and include_incomplete and active["trajectory"]:
+                    yield active["turn_id"], _compact_codex_trajectory(active["trajectory"]), {**metadata, "task_status": "superseded"}
+                active = {
+                    "turn_id": str(payload.get("turn_id") or "task"),
+                    "trajectory": [],
+                }
+                continue
+            if record.get("type") == "turn_context":
+                metadata["cwd"] = payload.get("cwd") or metadata["cwd"]
+                metadata["model"] = payload.get("model") or metadata["model"]
+                continue
+            if record.get("type") == "response_item":
+                turns = _codex_response_turns(payload)
+                if active is not None:
+                    active["trajectory"].extend(turns)
+                else:
+                    fallback.extend(turns)
+                continue
+            if record.get("type") == "event_msg" and ptype in {"task_complete", "turn_aborted"} and active:
+                status = "complete" if ptype == "task_complete" else "aborted"
+                if active["trajectory"]:
+                    yield active["turn_id"], _compact_codex_trajectory(active["trajectory"]), {**metadata, "task_status": status}
+                active = None
+    if active and include_incomplete and active["trajectory"]:
+        yield active["turn_id"], _compact_codex_trajectory(active["trajectory"]), {**metadata, "task_status": "open"}
+    elif fallback:
+        yield path.stem, _compact_codex_trajectory(fallback), {**metadata, "task_status": "legacy"}
+
+
+def _parse_codex_json(path: Path) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for _, trajectory, _ in _iter_codex_tasks(path, include_incomplete=True):
+        out.extend(trajectory)
     return out
 
 
@@ -327,6 +445,70 @@ def _build_trajectory(source: str, path: Path) -> list[dict[str, Any]]:
 
 
 # ---------- card derivation -------------------------------------------
+
+_TASK_WRAPPER_PREFIXES = (
+    "# agents.md instructions",
+    "<environment_context>",
+    "<permissions instructions>",
+    "<collaboration_mode>",
+    "<subagent_notification>",
+    "<local-command-caveat>",
+    "<command-message>",
+    "<command-name>",
+    "<system-reminder>",
+    "<transcript>",
+)
+_TRIVIAL_TASK_MESSAGES = {
+    "", "1", "ok", "okay", "yes", "no", "hi", "hello", "hey",
+    "thanks", "thank you", "continue", "go on", "done",
+    "你好", "您好", "在吗", "在不在", "继续", "继续做", "继续吧", "好的",
+    "好", "可以", "行", "收到", "谢谢", "完成", "搞定", "快点", "开始吧",
+}
+_GOAL_OBJECTIVE_RE = re.compile(
+    r"<objective>\s*(.*?)\s*</objective>", re.IGNORECASE | re.DOTALL,
+)
+_TASK_SUMMARY_RE = re.compile(r"(?im)^\s*\[task-summary\]\s*[:：]\s*(.+?)\s*$")
+
+
+def _clean_task_user_text(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    objective = _GOAL_OBJECTIVE_RE.search(text)
+    if objective:
+        text = objective.group(1).strip()
+    elif text.lower().startswith(_TASK_WRAPPER_PREFIXES):
+        return ""
+    if re.fullmatch(r"(?:<image[^>]*>\s*)+", text, re.IGNORECASE):
+        return ""
+    return text
+
+
+def _is_meaningful_task_text(content: str) -> bool:
+    text = _clean_task_user_text(content)
+    if not text:
+        return False
+    normalized = re.sub(r"[\s\W_]+", " ", text, flags=re.UNICODE).strip().lower()
+    if normalized in _TRIVIAL_TASK_MESSAGES:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    return len(compact) >= 3 or bool(re.search(r"[A-Za-z][0-9]|[0-9][A-Za-z]", compact))
+
+
+def _task_summary_from_traj(traj: list[dict[str, Any]]) -> str:
+    for turn in reversed(traj):
+        for label in reversed(_TASK_SUMMARY_RE.findall(str(turn.get("content") or ""))):
+            label = " ".join(label.strip().split()).strip('"\'`「」『』')
+            if label:
+                return label[:120]
+    return ""
+
+
+def _trajectory_has_retrievable_task(traj: list[dict[str, Any]]) -> bool:
+    return any(
+        turn.get("role") == "user" and _is_meaningful_task_text(turn.get("content") or "")
+        for turn in traj
+    ) or bool(_task_summary_from_traj(traj))
 
 def _derive_title(first_user: str, traj: list[dict[str, Any]], source: str) -> str:
     """Build a one-line title summarising the session.
@@ -362,7 +544,14 @@ def _derive_title(first_user: str, traj: list[dict[str, Any]], source: str) -> s
     return title or f"{source} session"
 
 
-def _card_from_trajectory(traj: list[dict[str, Any]], source: str, path: Path) -> dict[str, Any]:
+def _card_from_trajectory(
+    traj: list[dict[str, Any]],
+    source: str,
+    path: Path,
+    *,
+    session_id: str | None = None,
+    source_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Generate the LiteCard fields from the trajectory.
 
     Heuristic: first user message → query, last assistant message → outcome,
@@ -370,16 +559,7 @@ def _card_from_trajectory(traj: list[dict[str, Any]], source: str, path: Path) -
     later if you want better quality.
     """
     def _is_real_user(t: dict[str, Any]) -> bool:
-        if t["role"] != "user":
-            return False
-        c = (t.get("content") or "").lstrip()
-        # skip codex environment_context wrappers and our emoji-marked
-        # synthetic turns (none of these are actual user prompts)
-        if c.startswith("<environment_context>"):
-            return False
-        if c.startswith(("🔧", "📤", "💭", "🖼️", "[")):
-            return False
-        return bool(c)
+        return t["role"] == "user" and _is_meaningful_task_text(t.get("content") or "")
 
     def _is_real_assistant(t: dict[str, Any]) -> bool:
         if t["role"] != "assistant":
@@ -389,28 +569,36 @@ def _card_from_trajectory(traj: list[dict[str, Any]], source: str, path: Path) -
             return False
         return bool(c)
 
-    first_user = next((t["content"] for t in traj if _is_real_user(t)), "")
+    first_user = next(
+        (_clean_task_user_text(t["content"]) for t in traj if _is_real_user(t)),
+        "",
+    )
     last_assistant = next(
         (t["content"] for t in reversed(traj) if _is_real_assistant(t)),
         "",
     )
-    title = _derive_title(first_user, traj, source)
+    task_summary = _task_summary_from_traj(traj)
+    title = task_summary or _derive_title(first_user, traj, source)
     return {
-        "query": (first_user or "(no user message)")[:512],
+        "query": (first_user or task_summary or "(no user message)")[:512],
         "intent": title,
         "steps": [f"replay session {path.name} ({len(traj)} turns)"],
         "outcome": (last_assistant or "(no assistant reply)")[:512],
         "task_type": f"{source}-backfill",
-        "source_model": "unknown",  # server may infer better
+        "source_model": str((source_meta or {}).get("model") or "unknown"),
         "sensitivity": "medium",
         "acl": HARDCODED_ACL,            # ← never public
         "tags": [f"backfill", f"src:{source}"],
         "trajectory": traj,
         "meta": {
             "agent_type": source,
-            "session_id": path.stem,
+            "session_id": session_id or path.stem,
             "source_path": str(path),
             "uploaded_via": "session-extractor",
+            "extra": {
+                "parent_session_id": path.stem,
+                **(source_meta or {}),
+            },
         },
     }
 
@@ -445,9 +633,13 @@ def main(argv: list[str] | None = None) -> int:
                    help="cap total uploads (0 = unlimited)")
     p.add_argument("--since", default="",
                    help="only sessions modified after this ISO date")
-    p.add_argument("--max-mb", type=float, default=3.0,
-                   help="skip sessions larger than this (MB); default 3, "
-                        "0 = no cap. Big sessions can OOM the API.")
+    p.add_argument("--max-mb", type=float, default=0.0,
+                   help="optional hard file-size skip cap in MB; default 0 "
+                        "(large Claude sessions are segmented instead)")
+    p.add_argument("--segment-mb", type=float, default=4.0,
+                   help="maximum compacted Claude segment size in MB; default 4")
+    p.add_argument("--segment-turns", type=int, default=240,
+                   help="target turns per long Claude segment; default 240")
     p.add_argument("--sleep", type=float, default=0.5,
                    help="sleep between pushes (seconds), to give server "
                         "breathing room. Default 0.5")
@@ -496,8 +688,9 @@ def main(argv: list[str] | None = None) -> int:
             if since_ts and path.stat().st_mtime < since_ts:
                 counts["skipped"] += 1
                 continue
-            # Skip oversized sessions — they reliably OOM the server.
-            if args.max_mb > 0:
+            # --max-mb is now an explicit hard stop only. By default long
+            # Claude sessions are split below instead of silently discarded.
+            if src != "codex" and args.max_mb > 0:
                 size_mb = path.stat().st_size / (1024 * 1024)
                 if size_mb > args.max_mb:
                     counts["skipped"] += 1
@@ -506,42 +699,86 @@ def main(argv: list[str] | None = None) -> int:
                               f"({size_mb:.1f}MB > {args.max_mb}MB); skip "
                               f"(use --max-mb 0 to push anyway)")
                     continue
-            traj = _build_trajectory(src, path)
-            if not traj:
+            if src == "codex":
+                task_iter = (
+                    (f"{path.stem}:{turn_id}", trajectory, meta)
+                    for turn_id, trajectory, meta in _iter_codex_tasks(path)
+                )
+            elif src == "claude-code":
+                trajectory = _build_trajectory(src, path)
+                max_chars = max(64 * 1024, int(args.segment_mb * 1024 * 1024))
+                split = _split_claude_trajectory(
+                    trajectory,
+                    max_turns=max(40, args.segment_turns),
+                    max_chars=max_chars,
+                )
+                task_iter = (
+                    (
+                        path.stem if not segment_id else f"{path.stem}:{segment_id}",
+                        segment,
+                        meta,
+                    )
+                    for segment_id, segment, meta in split
+                )
+            else:
+                trajectory = _build_trajectory(src, path)
+                task_iter = iter([(path.stem, trajectory, {})])
+
+            found_task = False
+            for session_id, traj, source_meta in task_iter:
+                if args.limit and total >= args.limit:
+                    print(f"[extractor] hit --limit={args.limit}, stopping.")
+                    return _summary(counts)
+                if not traj:
+                    continue
+                found_task = True
+                if not _trajectory_has_retrievable_task(traj):
+                    counts["skipped"] += 1
+                    if args.verbose:
+                        print(f"  ⊘ {src}/{session_id[-8:]} runtime wrapper or trivial task; skip")
+                    continue
+                card = _card_from_trajectory(
+                    traj,
+                    src,
+                    path,
+                    session_id=session_id,
+                    source_meta=source_meta,
+                )
+                total += 1
+                short = (
+                    session_id.rsplit(":", 1)[-1][:8]
+                    if ":" in session_id
+                    else path.stem[:8]
+                )
+                if args.dry_run:
+                    print(f"  [{total}] would upload {src}/{short}  turns={len(traj)}")
+                    counts["uploaded"] += 1
+                    continue
+                try:
+                    resp = _hmac_post(base, name, secret, "/v1/lite/push", card)
+                except urllib.error.HTTPError as e:
+                    msg = e.read().decode("utf-8", errors="replace")[:200]
+                    print(f"  ✗ [{total}] {src}/{short}  HTTP {e.code}  {msg}")
+                    counts["failed"] += 1
+                    continue
+                except Exception as e:
+                    print(f"  ✗ [{total}] {src}/{short}  {type(e).__name__}: {e}")
+                    counts["failed"] += 1
+                    continue
+                eid = (resp.get("experience_id") or "?")[:8]
+                if resp.get("ingest_path") == "lite-dup":
+                    counts["duplicate"] += 1
+                    if args.verbose:
+                        print(f"  ⏎ [{total}] {src}/{short} → {eid} (already in pool)")
+                else:
+                    counts["uploaded"] += 1
+                    print(f"  ✓ [{total}] {src}/{short} → {eid}  (acl=private)")
+                if args.sleep > 0:
+                    time.sleep(args.sleep)
+            if not found_task:
                 counts["skipped"] += 1
                 if args.verbose:
-                    print(f"  ⊘ {path.name} empty trajectory; skip")
-                continue
-            card = _card_from_trajectory(traj, src, path)
-            total += 1
-            short = path.stem[:8]
-            if args.dry_run:
-                print(f"  [{total}] would upload {src}/{short}  turns={len(traj)}")
-                counts["uploaded"] += 1
-                continue
-            try:
-                resp = _hmac_post(base, name, secret, "/v1/lite/push", card)
-            except urllib.error.HTTPError as e:
-                msg = e.read().decode("utf-8", errors="replace")[:200]
-                print(f"  ✗ [{total}] {src}/{short}  HTTP {e.code}  {msg}")
-                counts["failed"] += 1
-                continue
-            except Exception as e:
-                print(f"  ✗ [{total}] {src}/{short}  {type(e).__name__}: {e}")
-                counts["failed"] += 1
-                continue
-            eid = (resp.get("experience_id") or "?")[:8]
-            if resp.get("ingest_path") == "lite-dup":
-                counts["duplicate"] += 1
-                if args.verbose:
-                    print(f"  ⏎ [{total}] {src}/{short} → {eid} (already in pool)")
-            else:
-                counts["uploaded"] += 1
-                print(f"  ✓ [{total}] {src}/{short} → {eid}  (acl=private)")
-            # Tiny breathing room between pushes so the single-thread
-            # server has time to commit + GC before the next request.
-            if args.sleep > 0:
-                time.sleep(args.sleep)
+                    print(f"  ⊘ {path.name} empty or incomplete trajectory; skip")
 
     return _summary(counts)
 

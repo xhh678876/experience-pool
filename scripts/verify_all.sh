@@ -49,7 +49,7 @@ phase "4/7  gateway unit tests"
 ( cd "$GW" && uv run pytest tests/ -q 2>&1 | tail -3 )
 
 phase "5/7  Next.js UI build"
-( cd "$UI" && npm run build 2>&1 | tail -10 )
+( cd "$UI" && rm -rf .next-test && NEXT_DIST_DIR=.next-test npm run build 2>&1 | tail -10 )
 
 phase "6/7  integration smoke (real claude CLI)"
 "$HERE/scripts/integration_smoke.sh"

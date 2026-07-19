@@ -8,10 +8,15 @@ Type=simple
 User=expool
 Group=expool
 WorkingDirectory=/opt/experience-pool/ui
-EnvironmentFile=-/etc/expool/expool.env
 Environment=NODE_ENV=production
+Environment=EXP_ROOT=/var/lib/expool
 Environment=EXP_DB_PATH=/var/lib/expool/pool.db
-ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3000
+Environment=EXP_TRAJECTORIES_DIR=/var/lib/expool/trajectories
+Environment=EXP_API_BASE=http://127.0.0.1:8080
+Environment=EXP_SERVICE_HOST=127.0.0.1
+Environment=EXP_UI_PORT=3000
+EnvironmentFile=-/etc/expool/expool.env
+ExecStart=/usr/bin/npm run start -- --hostname ${EXP_SERVICE_HOST} --port ${EXP_UI_PORT}
 Restart=on-failure
 RestartSec=5
 UMask=0077

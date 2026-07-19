@@ -55,7 +55,10 @@ export default async function ExperiencesPage({
           <h1 className="mt-1 text-xl font-semibold tracking-tight">经验库</h1>
           <p className="mt-1 text-xs text-muted-foreground">
             当前条件命中 <span className="font-mono text-foreground">{items.length}</span> 条 ·
-            按上传时间倒序
+            按上传时间倒序 · 全库只展示 public/community，private 上传在
+            <Link href="/me" className="ml-1 text-cyan-700 underline-offset-4 hover:underline">
+              我的经验池
+            </Link>
           </p>
         </div>
         <form

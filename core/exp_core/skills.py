@@ -412,6 +412,7 @@ def search_skills(
     w_similarity: float = 0.55,
     w_q: float = 0.35,
     c_exploration: float = 0.10,
+    viewer_name: str | None = None,
 ) -> list[dict[str, Any]]:
     from .fts import escape_query, rank_to_signal
 
@@ -437,14 +438,17 @@ def search_skills(
         SELECT v.experience_id AS skill_id, v.vector, s.name, s.version,
                s.description, s.q_outcome, s.q_intent, s.q_execution,
                s.q_orchestration, s.q_expression, s.invoke_count,
-               s.install_count, s.review_status, s.q_update_count
+               s.install_count, s.review_status, s.q_update_count,
+               s.agent_id, s.acl, a.name AS agent_name, a.team AS agent_team,
+               COALESCE(a.owner, a.name) AS agent_owner
         FROM vectors v
         JOIN skills s ON s.skill_id = v.experience_id
+        JOIN agents a ON a.agent_id = s.agent_id
         WHERE v.kind = 'skill_intent'
           AND s.review_status IN ('approved', 'auto_approved', 'edited')
         """
     )
-    rows = cur.fetchall()
+    rows = [r for r in cur.fetchall() if can_read_skill(conn, viewer_name, r)]
     if not rows:
         return []
     cands: list[tuple[Candidate, sqlite3.Row, float]] = []
@@ -512,11 +516,49 @@ def resolve_skill(
     return cur.fetchone()
 
 
+def can_read_skill(
+    conn: sqlite3.Connection,
+    viewer_name: str | None,
+    row: sqlite3.Row,
+) -> bool:
+    acl = str(row["acl"] or "private")
+    if acl in {"public", "org"}:
+        return True
+    if not viewer_name:
+        return False
+    viewer = conn.execute(
+        "SELECT agent_id, team, COALESCE(owner, name) AS owner FROM agents WHERE name = ?",
+        (viewer_name,),
+    ).fetchone()
+    if viewer is None:
+        return False
+    target_owner = row["agent_owner"] if "agent_owner" in row.keys() else None
+    if target_owner is None:
+        target = conn.execute(
+            "SELECT COALESCE(owner, name) AS owner FROM agents WHERE agent_id = ?",
+            (row["agent_id"],),
+        ).fetchone()
+        target_owner = target["owner"] if target else None
+    if viewer["agent_id"] == row["agent_id"] or viewer["owner"] == target_owner:
+        return True
+    return acl.startswith("team:") and acl.split(":", 1)[1] == viewer["team"]
+
+
+def resolve_skill_for_viewer(
+    conn: sqlite3.Connection,
+    name: str,
+    version: str | None,
+    viewer_name: str | None,
+) -> sqlite3.Row | None:
+    row = resolve_skill(conn, name, version)
+    return row if row is not None and can_read_skill(conn, viewer_name, row) else None
+
+
 def install_skill(
     conn: sqlite3.Connection, name: str, target_dir: Path,
     *, version: str | None = None, agent_name: str = "anonymous",
 ) -> dict[str, Any]:
-    row = resolve_skill(conn, name, version)
+    row = resolve_skill_for_viewer(conn, name, version, agent_name)
     if row is None:
         raise ValueError(f"skill not found: {name} (version={version})")
     bundle_path = Path(row["bundle_path"])
@@ -530,7 +572,12 @@ def install_skill(
             if member.isfile():
                 # Path traversal guard.
                 target_path = (target_dir / member.name).resolve()
-                if not str(target_path).startswith(str(target_dir)):
+                try:
+                    target_path.relative_to(target_dir)
+                    safe_target = True
+                except ValueError:
+                    safe_target = False
+                if not safe_target:
                     raise ValueError(f"unsafe path in bundle: {member.name}")
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 fobj = tar.extractfile(member)
@@ -567,6 +614,12 @@ def link_experience_uses(
     skill_names: list[str],
 ) -> list[str]:
     """Resolve names -> skill_ids and record usage. Returns the resolved IDs."""
+    viewer = conn.execute(
+        "SELECT a.name FROM experiences e JOIN agents a ON a.agent_id = e.agent_id "
+        "WHERE e.experience_id = ?",
+        (experience_id,),
+    ).fetchone()
+    viewer_name = viewer["name"] if viewer else None
     resolved: list[str] = []
     for name in skill_names:
         # Allow `name@version` form.
@@ -574,7 +627,7 @@ def link_experience_uses(
             n, v = name.split("@", 1)
         else:
             n, v = name, None
-        row = resolve_skill(conn, n, v)
+        row = resolve_skill_for_viewer(conn, n, v, viewer_name)
         if row is None:
             # Skip silently — logging would be tempting but this is an agent-
             # supplied list and we don't want one typo to fail the whole push.

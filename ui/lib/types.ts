@@ -63,6 +63,15 @@ export type ExperienceRow = {
   query?: string | null;
   outcome?: string | null;
   ingest_path?: string | null;
+  session_id?: string | null;
+  source_agent_type?: string | null;
+  parent_session_id?: string | null;
+  segment_id?: string | null;
+  source_byte_start?: number | null;
+  source_byte_end?: number | null;
+  task_status?: string | null;
+  turn_count?: number | null;
+  trajectory_score?: number | null;
 
   intent_text: string | null;
   preconditions: string | null;
@@ -147,6 +156,20 @@ export type ExperienceListItem = ExperienceRow & {
   q_scalar: number;
 };
 
-export function qScalar(e: Pick<ExperienceRow, "q_outcome" | "q_intent" | "q_execution" | "q_orchestration" | "q_expression">): number {
-  return (e.q_outcome + e.q_intent + e.q_execution + e.q_orchestration + e.q_expression) / 5;
+export function qScalar(
+  e: Pick<ExperienceRow, "q_outcome" | "q_intent" | "q_execution" | "q_orchestration" | "q_expression"> & {
+    q_update_count?: number | null;
+    trajectory_score?: number | null;
+  },
+): number {
+  const learnedQ = (
+    0.3 * e.q_outcome +
+    0.2 * e.q_intent +
+    0.2 * e.q_execution +
+    0.15 * e.q_orchestration +
+    0.15 * e.q_expression
+  );
+  const hasOnlineQ = (e.q_update_count ?? 0) > 0 || Math.abs(learnedQ) > 1e-9;
+  if (hasOnlineQ) return learnedQ;
+  return typeof e.trajectory_score === "number" ? e.trajectory_score : learnedQ;
 }

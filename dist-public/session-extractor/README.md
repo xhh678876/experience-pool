@@ -14,11 +14,11 @@ session,批量上传到内网经验池的本人 **private** 库。模仿 `claude
 门户 `/me` 页面有一行带好你 secret 的命令,大约这样:
 
 ```bash
-curl -fsSL <EXP_BASE_URL>/session-extractor/run.sh | \
+env \
   EXP_AGENT_NAME='user-xxx' \
   EXP_AGENT_SECRET='<portal-issued-secret>' \
   EXP_BASE_URL='<EXP_BASE_URL>' \
-  bash
+  bash -c 'curl -fsSL "$EXP_BASE_URL/session-extractor/run.sh" | bash'
 ```
 
 这条命令做的事:
@@ -29,10 +29,12 @@ curl -fsSL <EXP_BASE_URL>/session-extractor/run.sh | \
    `tool_result` 各自成一个独立的 turn,UI 才能分别气泡渲染
 4. **codex adapter 同样支持** nested `{type, payload}` 格式,识别 `function_call` /
    `function_call_output` / `reasoning`,统一映射到 tool_calls / role=tool / 思考块
-5. 客户端 L0 正则脱敏后,HMAC 签名 POST 到 `/v1/lite/push`,`acl=private`
-6. 标题优先级:trajectory 中最后一条 `[task-summary]:` → 第一条真实用户消息的第一句
+5. **Claude 长 session 自动分段**:稳定生成 `seg-0001...`,保留父 session 回链,
+   不再因为整个 JSONL 超过 3/4 MB 而静默跳过
+6. 客户端 L0 正则脱敏后,HMAC 签名 POST 到 `/v1/lite/push`,`acl=private`
+7. 标题优先级:trajectory 中最后一条 `[task-summary]:` → 第一条真实用户消息的第一句
    (这个独立工具**不**调本地 LLM 总结——保持零依赖)
-7. 服务端按 `(agent_id, fingerprint)` 去重,**重跑安全**
+8. 服务端按 session/fingerprint 去重,**重跑安全**
 
 ## 自己跑(已经下到本机的话)
 
@@ -49,13 +51,15 @@ python3 extract_and_upload.py [options]
 |---|---|---|
 | `--sources <list>` | auto-detect | 逗号分隔:`claude-code,codex,hermes,openclaw` |
 | `--limit N` | 不限 | 最多上传 N 条 |
-| `--max-mb N` | 4 | 单 session 大小上限(MB),`0` 不限 |
+| `--max-mb N` | 0 | 可选整文件硬上限(MB);默认不按整文件跳过 |
+| `--segment-mb N` | 4 | Claude 长 session 每个压缩分段的字符预算(MB) |
+| `--segment-turns N` | 240 | Claude 长 session 的目标分段 turn 数 |
 | `--sleep S` | 0.5 | 两次上传之间停 S 秒,避免压垮服务端 |
 | `--since <iso>` | 无 | 只跑这个日期之后的 |
 | `--dry-run` | 关 | 列要传啥不动手 |
 | `--verbose` / `-v` | 关 | 每条 session 打一行进度 |
 
-例(全量、不限大小、不停顿):
+例(全量、长 session 自动分段、不停顿):
 
 ```bash
 EXP_EXTRACTOR_FLAGS='--max-mb 0 --sleep 0 --verbose'

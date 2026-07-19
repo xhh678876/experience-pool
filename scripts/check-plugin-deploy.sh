@@ -103,7 +103,7 @@ required = [
 missing = [key for key in required if not data.get(key)]
 if missing:
     raise SystemExit(f"missing metadata fields: {', '.join(missing)}")
-if data["name"] != "@chuangzhi/expool-plugin":
+if data["name"] != "@haohui666/expool-plugin":
     raise SystemExit(f"unexpected package name: {data['name']}")
 for key in ("download_url", "install_script_url"):
     print(f"{key.upper()}={shlex.quote(str(data[key]))}")
@@ -132,6 +132,8 @@ printf '[check-plugin] install.sh ok\n'
 curl --noproxy '*' -fsSL "$UI_BASE/plugins" -o "$WORK/plugins.html"
 for token in \
   'Experience Pool 插件' \
+  'github.com/xhh678876/expool-mcp-plugin' \
+  '@haohui666/expool-plugin' \
   '一键脚本安装' \
   '手动包安装' \
   'plugins/install.sh' \

@@ -4,8 +4,14 @@ import { apiBindScript, apiMe, apiPluginPackage } from "@/lib/users-api";
 import { publicGatewayBase, publicUiBase } from "@/lib/public-url";
 import { logoutAction } from "./login/actions";
 
-const NPM_PACKAGE = process.env.EXP_PLUGIN_NPM_PACKAGE ?? "@chuangzhi/expool-plugin";
-const PLUGIN_REPO_URL = (process.env.EXP_PLUGIN_REPO_URL ?? "").trim();
+const NPM_PACKAGE = process.env.EXP_PLUGIN_NPM_PACKAGE ?? "@haohui666/expool-plugin";
+const PLUGIN_REPO_URL = (
+  process.env.EXP_PLUGIN_REPO_URL ?? "https://github.com/xhh678876/expool-mcp-plugin"
+).trim().replace(/\.git$/, "");
+
+function gitInstallUrl(repoUrl: string): string {
+  return repoUrl.endsWith(".git") ? repoUrl : `${repoUrl}.git`;
+}
 
 export default async function BindScriptPanel() {
   const me = await apiMe();
@@ -18,7 +24,7 @@ export default async function BindScriptPanel() {
     const intranetInstall = pluginPackage?.install_command;
     const npmInstall = `npx ${NPM_PACKAGE} install --agents claude,codex,openclaw,hermes --base ${defaultBase}`;
     const githubInstall = PLUGIN_REPO_URL
-      ? `npx --yes git+${PLUGIN_REPO_URL}.git install --agents claude,codex,openclaw,hermes --base ${defaultBase}`
+      ? `npx --yes git+${gitInstallUrl(PLUGIN_REPO_URL)} install --agents claude,codex,openclaw,hermes --base ${defaultBase}`
       : "";
     const detect = `expool-plugin detect --source auto`;
     const terminalAutoOn = `expool-plugin auto on --sources claude-code,codex,hermes --interval 120`;
@@ -66,7 +72,7 @@ export default async function BindScriptPanel() {
   const intranetInstall = pluginPackage?.install_command;
   const npmInstall = `npx ${NPM_PACKAGE} install --agents claude,codex,openclaw,hermes --base ${base}`;
   const githubInstall = PLUGIN_REPO_URL
-    ? `npx --yes git+${PLUGIN_REPO_URL}.git install --agents claude,codex,openclaw,hermes --base ${base}`
+    ? `npx --yes git+${gitInstallUrl(PLUGIN_REPO_URL)} install --agents claude,codex,openclaw,hermes --base ${base}`
     : "";
   const terminalPair = `expool-plugin pair expair_... --base ${base}`;
   const terminalBind = `expool-plugin bind+api expk_... --base ${base}`;

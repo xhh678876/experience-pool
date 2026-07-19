@@ -4,7 +4,9 @@ import { Badge } from "@/components/ui/badge";
 import {
   ChevronDown,
   Download,
+  Github,
   Key,
+  PackageCheck,
   Plug,
   Radar,
   Search,
@@ -19,17 +21,23 @@ import { apiPluginPackage } from "@/lib/users-api";
 
 export const dynamic = "force-dynamic";
 
-const NPM_PACKAGE = process.env.EXP_PLUGIN_NPM_PACKAGE ?? "@chuangzhi/expool-plugin";
-const PLUGIN_REPO_URL = (process.env.EXP_PLUGIN_REPO_URL ?? "").trim();
+const NPM_PACKAGE = process.env.EXP_PLUGIN_NPM_PACKAGE ?? "@haohui666/expool-plugin";
+const PLUGIN_REPO_URL = (
+  process.env.EXP_PLUGIN_REPO_URL ?? "https://github.com/xhh678876/expool-mcp-plugin"
+).trim().replace(/\.git$/, "");
+
+function gitInstallUrl(repoUrl: string): string {
+  return repoUrl.endsWith(".git") ? repoUrl : `${repoUrl}.git`;
+}
 
 export default async function PluginsPage() {
   const base = publicGatewayBase();
   const pluginPackage = await apiPluginPackage();
   const meUrl = `${publicUiBase()}/me/api-keys`;
   const npmInstall = `npx ${NPM_PACKAGE} install`;
-  const githubInstall = PLUGIN_REPO_URL ? `npx --yes git+${PLUGIN_REPO_URL}.git install` : "";
+  const githubInstall = PLUGIN_REPO_URL ? `npx --yes git+${gitInstallUrl(PLUGIN_REPO_URL)} install` : "";
   const terminalPair = `expool-plugin pair expair_...`;
-  const terminalBind = `expool-plugin bind expk_...`;
+  const terminalBind = `expool-plugin bind+api expk_...`;
   const terminalDetect = `expool-plugin detect`;
   const terminalAutoOn = `expool-plugin auto on --sources claude-code,codex,hermes --interval 120`;
   const terminalAutoOff = `expool-plugin auto off`;
@@ -57,6 +65,24 @@ export default async function PluginsPage() {
           <Link href="/me" className="mx-1 text-cyan-700 hover:underline">/me</Link>
           页能撤回。
         </p>
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <PluginFact
+            icon={<Github className="h-4 w-4" />}
+            label="官方源码仓库"
+            value={PLUGIN_REPO_URL.replace(/^https?:\/\//, "")}
+            href={PLUGIN_REPO_URL}
+          />
+          <PluginFact
+            icon={<PackageCheck className="h-4 w-4" />}
+            label="npm 包"
+            value={pluginPackage?.name ?? NPM_PACKAGE}
+          />
+          <PluginFact
+            icon={<Download className="h-4 w-4" />}
+            label="内网分发"
+            value={pluginPackage ? `${pluginPackage.filename} · v${pluginPackage.version}` : "等待生成 expool.tgz"}
+          />
+        </div>
       </section>
 
       <Section
@@ -69,6 +95,20 @@ export default async function PluginsPage() {
           description="走 npmjs 公网，最新版自动拉。出差换机器、CI 部署都能用。"
           command={npmInstall}
         />
+        {pluginPackage?.install_script_command ? (
+          <CommandRow
+            label="一键脚本安装"
+            description="走当前内网 gateway 下载 /plugins/install.sh，自动校验 tarball sha256 并注册 Claude Code / Codex / OpenClaw / Hermes。"
+            command={pluginPackage.install_script_command}
+          />
+        ) : null}
+        {pluginPackage?.install_command ? (
+          <CommandRow
+            label="手动包安装"
+            description="不想直接 curl | bash 时用。先下载 /plugins/expool.tgz，再 npm install -g 本地包。"
+            command={pluginPackage.install_command}
+          />
+        ) : null}
 
         <details className="group rounded-lg border border-border/60 bg-white/50">
           <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
@@ -249,6 +289,39 @@ function BulletList({ items }: { items: React.ReactNode[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+function PluginFact({
+  icon,
+  label,
+  value,
+  href,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  href?: string;
+}) {
+  const text = (
+    <span className="block truncate font-mono text-[11px] text-foreground">
+      {value}
+    </span>
+  );
+  return (
+    <div className="min-w-0 rounded-lg border border-border/60 bg-white/70 px-3 py-2.5">
+      <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="text-cyan-800">{icon}</span>
+        <span>{label}</span>
+      </div>
+      {href ? (
+        <a href={href} target="_blank" rel="noreferrer" className="hover:text-cyan-800 hover:underline">
+          {text}
+        </a>
+      ) : (
+        text
+      )}
+    </div>
   );
 }
 

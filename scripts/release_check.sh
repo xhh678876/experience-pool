@@ -38,7 +38,8 @@ echo "[5/5] UI build + high-severity audit gate"
   if [ ! -d node_modules ]; then
     npm install
   fi
-  npm run build
+  rm -rf .next-test
+  NEXT_DIST_DIR=.next-test npm run build
   npm audit --audit-level=high
 )
 

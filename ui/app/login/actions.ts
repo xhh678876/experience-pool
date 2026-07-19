@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { apiLogin, apiLogout } from "@/lib/users-api";
-import { withBase } from "@/components/ui/link";
+import { withPublicBase } from "@/lib/base-path";
 
 export interface LoginFormState {
   ok: boolean;
@@ -31,10 +31,10 @@ export async function loginAction(
   if (!result.ok) {
     return { ok: false, message: result.message ?? "登录失败" };
   }
-  redirect(withBase(nextPath));
+  redirect(withPublicBase(nextPath));
 }
 
 export async function logoutAction(): Promise<void> {
   await apiLogout();
-  redirect(withBase("/login"));
+  redirect(withPublicBase("/login"));
 }

@@ -28,7 +28,7 @@ export default async function SkillsPage({ searchParams }: SkillsPageProps) {
   const reviewStatus =
     params.review_status && params.review_status !== "all" ? params.review_status : undefined;
   const search = params.search?.trim() ? params.search : undefined;
-  const items = listSkills({ reviewStatus, search });
+  const items = await listSkills({ reviewStatus, search });
   const hasFilters = Boolean(reviewStatus || search);
 
   const statuses = ["all", "auto_approved", "approved", "pending", "rejected", "edited"];

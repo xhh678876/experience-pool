@@ -22,11 +22,11 @@ interface SkillDetailProps {
 
 export default async function SkillDetailPage({ params }: SkillDetailProps) {
   const { id } = await params;
-  const skill = getSkill(id);
+  const skill = await getSkill(id);
   if (!skill) {
     notFound();
   }
-  const uses = listExperiencesUsingSkill(id);
+  const uses = await listExperiencesUsingSkill(id);
   const updates = listSkillQUpdates(id);
   const triggers = JSON.parse(skill.trigger_keywords || "[]") as string[];
   const dependencies = JSON.parse(skill.dependencies || "[]") as string[];

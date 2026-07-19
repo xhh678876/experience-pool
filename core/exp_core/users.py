@@ -334,6 +334,11 @@ def revoke_session(conn: sqlite3.Connection, token: str) -> None:
 
 # ---------- bind script ----------------------------------------------------
 
+def sh_quote(value: str) -> str:
+    """Quote a value for a POSIX shell one-liner."""
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
 def render_bind_script(*, base_url: str, agent_name: str, secret: str,
                        team: str = "default", agent_id: str | None = None) -> str:
     """One-liner the user pastes into any agent terminal. Downloads the
@@ -341,17 +346,31 @@ def render_bind_script(*, base_url: str, agent_name: str, secret: str,
     so no `register` HTTP call happens, and wires hooks."""
     base_url = base_url.rstrip("/")
     parts = [
-        f"curl -sSL {base_url}/install |",
-        f"EXP_AGENT_NAME='{agent_name}'",
-        f"EXP_AGENT_SECRET='{secret}'",
-        f"EXP_TEAM='{team}'",
-        f"EXP_NONINTERACTIVE=1",
-        f"EXP_BASE_URL='{base_url}'",
+        "env",
+        f"EXP_AGENT_NAME={sh_quote(agent_name)}",
+        f"EXP_AGENT_SECRET={sh_quote(secret)}",
+        f"EXP_TEAM={sh_quote(team)}",
+        "EXP_NONINTERACTIVE=1",
+        f"EXP_BASE_URL={sh_quote(base_url)}",
     ]
     if agent_id:
-        parts.append(f"EXP_AGENT_ID='{agent_id}'")
-    parts.append("bash")
+        parts.append(f"EXP_AGENT_ID={sh_quote(agent_id)}")
+    parts.extend(["bash", "-c", sh_quote('curl -fsSL "$EXP_BASE_URL/install" | bash')])
     return " ".join(parts)
+
+
+def render_backfill_script(*, base_url: str, agent_name: str, secret: str) -> str:
+    """One-liner for historical session backfill."""
+    base_url = base_url.rstrip("/")
+    return " ".join([
+        "env",
+        f"EXP_AGENT_NAME={sh_quote(agent_name)}",
+        f"EXP_AGENT_SECRET={sh_quote(secret)}",
+        f"EXP_BASE_URL={sh_quote(base_url)}",
+        "bash",
+        "-c",
+        sh_quote('curl -fsSL "$EXP_BASE_URL/session-extractor/run.sh" | bash'),
+    ])
 
 
 def get_credential_for_user(user: User) -> dict[str, str] | None:

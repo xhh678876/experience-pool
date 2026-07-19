@@ -90,6 +90,87 @@ export interface PluginPackageResult {
   install_command: string;
 }
 
+export interface RagChunkResult {
+  chunk_id: string;
+  experience_id: string;
+  chunk_type: string;
+  text: string;
+  turn_start: number | null;
+  turn_end: number | null;
+  meta: Record<string, unknown>;
+  token_count: number;
+  similarity: number;
+  keyword: number;
+  fts: number;
+  lexical: number;
+  coverage: number;
+  action_lexical: number;
+  situation_lexical: number;
+  outcome_lexical: number;
+  quality: number;
+  score: number;
+  source: string;
+  owner: string;
+  agent_name: string;
+  team: string;
+  task_type: string;
+  sensitivity: string;
+  created_at: string;
+  session_id: string | null;
+  parent_session_id: string | null;
+}
+
+export interface RagExperienceResult {
+  experience_id: string;
+  query: string | null;
+  intent_text: string | null;
+  outcome: string | null;
+  summary: string | null;
+  task_type: string;
+  sensitivity: string;
+  created_at: string;
+  session_id: string | null;
+  source_agent_type: string | null;
+  parent_session_id: string | null;
+  segment_id: string | null;
+  source_byte_start: number | null;
+  source_byte_end: number | null;
+  task_status: string | null;
+  agent_name: string;
+}
+
+export interface RagContextResult {
+  event_id: string | null;
+  context: string;
+  chunks: RagChunkResult[];
+  experiences: RagExperienceResult[];
+  scope: string;
+  scope_meta: {
+    viewer: string;
+    viewer_owner: string;
+    project: Record<string, unknown> | null;
+    community_unlocked: boolean;
+  };
+  retrieval_meta: {
+    query_terms: string[];
+    vector_index_size: number;
+    prefetched_vectors: number;
+    acl_candidates: number;
+    reranked_candidates: number;
+    accepted_candidates: number;
+    returned_chunks: number;
+    max_chunks_per_experience: number;
+    min_score: number;
+  };
+}
+
+export interface RagContextCallResult {
+  ok: boolean;
+  status: number;
+  message?: string;
+  data?: RagContextResult;
+}
+
 export async function apiPluginPackage(): Promise<PluginPackageResult | null> {
   try {
     const resp = await fetch(`${apiBase()}/v1/plugin/package`, {
@@ -233,6 +314,51 @@ export async function apiMe(): Promise<MeResult | null> {
 
 export async function apiBindScript(): Promise<BindScriptResult | null> {
   return withSession<BindScriptResult>("/v1/users/me/bind-script");
+}
+
+export async function apiRagContext(input: {
+  q: string;
+  top_k?: number;
+  task_type?: string;
+  scope?: string;
+  project?: string;
+  record_event?: boolean;
+}): Promise<RagContextCallResult> {
+  const c = await cookies();
+  const tok = c.get(SESSION_COOKIE)?.value;
+  if (!tok) return { ok: false, status: 401, message: "not logged in" };
+  try {
+    const resp = await fetch(`${apiBase()}/v1/rag/context`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: `${SESSION_COOKIE}=${tok}`,
+      },
+      body: JSON.stringify(input),
+      cache: "no-store",
+    });
+    let body: unknown = {};
+    try {
+      body = await resp.json();
+    } catch {
+      body = {};
+    }
+    if (!resp.ok) {
+      const errorBody = body as { detail?: string; error?: string };
+      return {
+        ok: false,
+        status: resp.status,
+        message: errorBody.detail ?? errorBody.error ?? "RAG search failed",
+      };
+    }
+    return { ok: true, status: resp.status, data: body as RagContextResult };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      message: error instanceof Error ? error.message : "RAG service unavailable",
+    };
+  }
 }
 
 // ---- API keys ----

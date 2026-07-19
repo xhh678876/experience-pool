@@ -8,8 +8,8 @@ interface SkillsTabProps {
   experienceId: string;
 }
 
-export function SkillsTab({ experienceId }: SkillsTabProps) {
-  const uses = listSkillsUsedByExperience(experienceId);
+export async function SkillsTab({ experienceId }: SkillsTabProps) {
+  const uses = await listSkillsUsedByExperience(experienceId);
   if (uses.length === 0) {
     return (
       <Card>

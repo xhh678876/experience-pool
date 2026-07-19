@@ -2,15 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-EXP_ROOT="${EXP_ROOT:-/tmp/chuangzhi-expool}"
-EXP_DB_PATH="${EXP_DB_PATH:-$EXP_ROOT/pool.db}"
-EXP_SERVICE_HOST="${EXP_SERVICE_HOST:-127.0.0.1}"
-EXP_GATEWAY_HOST="${EXP_GATEWAY_HOST:-0.0.0.0}"
-EXP_API_PORT="${EXP_API_PORT:-8080}"
-EXP_UI_PORT="${EXP_UI_PORT:-3000}"
-EXP_GATEWAY_PORT="${EXP_GATEWAY_PORT:-3080}"
-EXP_GATEWAY_IMPL="${EXP_GATEWAY_IMPL:-node}"
-EXP_UI_MODE="${EXP_UI_MODE:-dev}"
+EXP_ENV="${EXP_ENV:-development}"
+# shellcheck disable=SC1091
+. "$ROOT/config/env.sh"
 
 PIDS=()
 export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
@@ -83,15 +77,18 @@ start_api() {
     return $?
   fi
 
-  mkdir -p "$EXP_ROOT"
+  mkdir -p "$EXP_ROOT" "$(dirname "$EXP_DB_PATH")" "$EXP_TRAJECTORIES_DIR"
   info "Starting FastAPI API on $EXP_SERVICE_HOST:$EXP_API_PORT"
   (
     cd "$ROOT/core"
     EXP_ROOT="$EXP_ROOT" \
+    EXP_DB_PATH="$EXP_DB_PATH" \
+    EXP_TRAJECTORIES_DIR="$EXP_TRAJECTORIES_DIR" \
     EXP_RATE_LIMIT_ENABLED="${EXP_RATE_LIMIT_ENABLED:-1}" \
       uv run --extra server uvicorn exp_core.server:app \
         --host "$EXP_SERVICE_HOST" \
-        --port "$EXP_API_PORT"
+        --port "$EXP_API_PORT" \
+        --workers "$EXP_API_WORKERS"
   ) &
   PIDS+=("$!")
   wait_http "http://$EXP_SERVICE_HOST:$EXP_API_PORT/healthz" "API"
@@ -111,9 +108,13 @@ start_ui() {
       npm install
     fi
     if [ "$EXP_UI_MODE" = "start" ]; then
-      EXP_DB_PATH="$EXP_DB_PATH" npm run start -- --hostname "$EXP_SERVICE_HOST" --port "$EXP_UI_PORT"
+      if [ ! -f .next/BUILD_ID ]; then
+        info "Next.js production build missing; running npm run build once."
+        EXP_DB_PATH="$EXP_DB_PATH" EXP_API_BASE="$EXP_API_ORIGIN" npm run build
+      fi
+      EXP_DB_PATH="$EXP_DB_PATH" EXP_API_BASE="$EXP_API_ORIGIN" npm run start -- --hostname "$EXP_SERVICE_HOST" --port "$EXP_UI_PORT"
     else
-      EXP_DB_PATH="$EXP_DB_PATH" npm run dev -- --hostname "$EXP_SERVICE_HOST" --port "$EXP_UI_PORT"
+      EXP_DB_PATH="$EXP_DB_PATH" EXP_API_BASE="$EXP_API_ORIGIN" npm run dev -- --hostname "$EXP_SERVICE_HOST" --port "$EXP_UI_PORT"
     fi
   ) &
   PIDS+=("$!")
@@ -141,8 +142,8 @@ start_gateway() {
       cd "$ROOT"
       EXP_GATEWAY_HOST="$EXP_GATEWAY_HOST" \
       EXP_GATEWAY_PORT="$EXP_GATEWAY_PORT" \
-      EXP_API_ORIGIN="http://$EXP_SERVICE_HOST:$EXP_API_PORT" \
-      EXP_UI_ORIGIN="http://$EXP_SERVICE_HOST:$EXP_UI_PORT" \
+      EXP_API_ORIGIN="$EXP_API_ORIGIN" \
+      EXP_UI_ORIGIN="$EXP_UI_ORIGIN" \
         node scripts/local-gateway.mjs
     ) &
   fi
@@ -158,12 +159,14 @@ cat <<EOF
 
 Experience Pool intranet preview is running.
 
+Profile:      $EXP_ENV
 Unified URL:  http://127.0.0.1:$EXP_GATEWAY_PORT
 Gateway:      http://127.0.0.1:$EXP_GATEWAY_PORT/__gateway/health
 API health:   http://127.0.0.1:$EXP_GATEWAY_PORT/healthz
 UI upstream:  http://$EXP_SERVICE_HOST:$EXP_UI_PORT
 API upstream: http://$EXP_SERVICE_HOST:$EXP_API_PORT
 Data root:    $EXP_ROOT
+Database:     $EXP_DB_PATH
 
 Press Ctrl+C to stop the processes started by this script.
 EOF

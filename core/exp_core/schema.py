@@ -176,6 +176,44 @@ CREATE TABLE IF NOT EXISTS q_updates (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS reuse_events (
+    event_id TEXT PRIMARY KEY,
+    viewer_agent_id TEXT NOT NULL,
+    viewer_name TEXT NOT NULL,
+    query_text TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    task_type TEXT,
+    project_ref TEXT,
+    top_k INTEGER NOT NULL,
+    final_status TEXT NOT NULL DEFAULT 'unknown',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    feedback_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reuse_events_viewer ON reuse_events(viewer_agent_id, created_at);
+
+CREATE TABLE IF NOT EXISTS reuse_items (
+    event_id TEXT NOT NULL,
+    experience_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL DEFAULT '',
+    rank INTEGER NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    similarity REAL NOT NULL DEFAULT 0,
+    source TEXT,
+    chunk_type TEXT,
+    was_injected INTEGER NOT NULL DEFAULT 1,
+    was_used_by_agent INTEGER,
+    reward REAL,
+    confidence REAL,
+    feedback_source TEXT,
+    feedback_reason TEXT,
+    feedback_at TEXT,
+    PRIMARY KEY(event_id, experience_id, chunk_id),
+    FOREIGN KEY(event_id) REFERENCES reuse_events(event_id),
+    FOREIGN KEY(experience_id) REFERENCES experiences(experience_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reuse_items_exp ON reuse_items(experience_id);
+CREATE INDEX IF NOT EXISTS idx_reuse_items_event ON reuse_items(event_id);
+
 CREATE TABLE IF NOT EXISTS search_log (
     log_id INTEGER PRIMARY KEY AUTOINCREMENT,
     experience_id TEXT NOT NULL,

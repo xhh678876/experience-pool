@@ -1,14 +1,21 @@
 import Link from "@/components/ui/link";
 import { Layers3, Sparkles, ArrowRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { listClusters, getCrystalStats } from "@/lib/queries";
+import { listClusters } from "@/lib/queries";
 import { formatDate, shortId } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
 export default async function ClustersIndexPage() {
-  const clusters = listClusters(200);
-  const stats = getCrystalStats();
+  const clusters = await listClusters(200);
+  const stats = {
+    clusters: clusters.length,
+    crystallized: clusters.filter((item) => item.crystallized_skill_id).length,
+    avg_members: clusters.length
+      ? Math.round((clusters.reduce((sum, item) => sum + item.member_count, 0) / clusters.length) * 100) / 100
+      : 0,
+    skills: clusters.filter((item) => item.crystallized_skill_id).length,
+  };
 
   return (
     <div className="flex flex-col gap-6 pb-12">

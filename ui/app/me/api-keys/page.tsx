@@ -1,7 +1,7 @@
 import Link from "@/components/ui/link";
 import { Key, ShieldCheck, BookOpen } from "lucide-react";
 import { redirect } from "next/navigation";
-import { withBase } from "@/components/ui/link";
+import { withPublicBase } from "@/lib/base-path";
 import { apiListApiKeys, apiMe } from "@/lib/users-api";
 import { formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 
 export default async function ApiKeysPage() {
   const me = await apiMe();
-  if (!me) redirect(withBase("/login?next=/me/api-keys"));
+  if (!me) redirect(withPublicBase("/login?next=/me/api-keys"));
 
   const list = await apiListApiKeys();
   const keys = list?.keys ?? [];

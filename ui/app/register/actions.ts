@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { apiRegister } from "@/lib/users-api";
-import { withBase } from "@/components/ui/link";
+import { withPublicBase } from "@/lib/base-path";
 
 export interface RegisterFormState {
   ok: boolean;
@@ -41,5 +41,5 @@ export async function registerAction(
   }
 
   // Auto-logged-in via cookie. Bounce to home where the bind script is shown.
-  redirect(withBase("/"));
+  redirect(withPublicBase("/"));
 }

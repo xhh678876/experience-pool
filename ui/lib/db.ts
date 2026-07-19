@@ -10,15 +10,22 @@ function resolveDbPath(): string {
   if (fromEnv && fromEnv.length > 0) {
     return fromEnv.replace(/^~(?=$|\/|\\)/, os.homedir());
   }
-  return path.join(os.homedir(), ".experience-pool", "pool.db");
+  const root = process.env.EXP_ROOT;
+  if (root && root.length > 0) {
+    return path.join(
+      /* turbopackIgnore: true */ root.replace(/^~(?=$|\/|\\)/, os.homedir()),
+      "pool.db",
+    );
+  }
+  return path.join(/* turbopackIgnore: true */ os.homedir(), ".experience-pool", "pool.db");
 }
 
 export function getDb(): Database.Database {
   if (_db) return _db;
   const dbPath = resolveDbPath();
-  if (!fs.existsSync(dbPath)) {
+  if (!fs.existsSync(/* turbopackIgnore: true */ dbPath)) {
     // Create the directory at minimum so better-sqlite3 can open in readwrite mode if requested.
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(dbPath), { recursive: true });
   }
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");

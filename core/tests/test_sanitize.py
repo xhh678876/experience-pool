@@ -3,7 +3,7 @@
 Covers:
   * Layer 1 unit tests for individual rules.
   * pool.push() integration:
-    - API key in trajectory -> Layer 1 redacts, status=human_review.
+    - API key in private trajectory -> Layer 1 redacts, but does not block recall.
     - Email + phone -> Layer 1 redacts, status=flagged.
     - Clean trajectory -> status=done.
   * Raw trajectory is preserved at <id>.raw.json when changes happen.
@@ -186,7 +186,7 @@ def make_pool(tmp: Path) -> ExperiencePool:
     return ExperiencePool(PoolConfig(root=tmp))
 
 
-def test_push_with_api_key_routes_to_human_review(tmp_path):
+def test_private_push_with_api_key_does_not_block_recall(tmp_path):
     pool = make_pool(tmp_path)
     pool.register_agent("agent-a", "platform")
     traj = [
@@ -195,7 +195,7 @@ def test_push_with_api_key_routes_to_human_review(tmp_path):
     ]
     row = pool.push("agent-a", "csv_analysis", "claude-stub", traj, sensitivity="medium")
     assert row["sanitization_status"] == "human_review"
-    assert row["review_status"] == "pending"
+    assert row["review_status"] == "auto_approved"
 
     # The on-disk trajectory must be sanitized.
     on_disk = json.loads(Path(row["trajectory_path"]).read_text())
@@ -208,6 +208,27 @@ def test_push_with_api_key_routes_to_human_review(tmp_path):
     assert raw_path.exists()
     raw = raw_path.read_text()
     assert "AKIAIOSFODNN7EXAMPLE" in raw
+    pool.close()
+
+
+def test_team_push_with_api_key_routes_to_human_review(tmp_path):
+    pool = make_pool(tmp_path)
+    pool.register_agent("agent-a", "platform")
+    traj = [
+        {"role": "user", "content": "ship with key AKIAIOSFODNN7EXAMPLE today"},
+        {"role": "assistant", "content": "deployed using the supplied key"},
+    ]
+    row = pool.push(
+        "agent-a",
+        "csv_analysis",
+        "claude-stub",
+        traj,
+        sensitivity="medium",
+        acl="team:platform",
+    )
+    assert row["acl"] == "team:platform"
+    assert row["sanitization_status"] == "human_review"
+    assert row["review_status"] == "pending"
     pool.close()
 
 
@@ -272,7 +293,7 @@ def test_push_full_fixture(tmp_path):
     pool.register_agent("agent-a", "platform")
     row = pool.push("agent-a", "csv_analysis", "claude-stub", traj, sensitivity="high")
     assert row["sanitization_status"] == "human_review"
-    assert row["review_status"] == "pending"
+    assert row["review_status"] == "auto_approved"
 
     on_disk = json.loads(Path(row["trajectory_path"]).read_text())
     flat = json.dumps(on_disk)

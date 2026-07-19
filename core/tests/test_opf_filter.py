@@ -8,6 +8,8 @@ splicing, recursive walker, severity escalation, error handling).
 from __future__ import annotations
 
 import re
+import sys
+import types
 from dataclasses import dataclass
 from typing import Iterable
 from unittest import mock
@@ -79,7 +81,14 @@ def test_no_package_installed_falls_through(monkeypatch):
     silently no-op rather than crash."""
     monkeypatch.delenv("EXP_OPF_DISABLED", raising=False)
     # Force ImportError by patching the import site.
-    monkeypatch.setitem(__import__("sys").modules, "opf", None)
+    # Also leave a usable child module cached: the loader must not bypass the
+    # unavailable parent package by reusing this stale entry.
+    monkeypatch.setitem(
+        sys.modules,
+        "opf._api",
+        types.SimpleNamespace(OPF=lambda **_kwargs: _FakeRedactor([])),
+    )
+    monkeypatch.setitem(sys.modules, "opf", None)
     res = opf_filter.redact_text("hello")
     assert res.used is False
     assert res.text == "hello"

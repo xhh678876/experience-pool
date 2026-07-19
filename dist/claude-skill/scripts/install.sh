@@ -7,7 +7,7 @@
 # 4. Verifies connectivity to the gateway.
 #
 # Override:
-#   EXP_BASE_URL    gateway URL (default http://127.0.0.1:3080)
+#   EXP_BASE_URL    gateway URL (default https://expool.clawsii.com)
 #   EXP_AGENT_NAME  agent identifier (default $USER-$(hostname))
 #   EXP_TEAM        team for the agent (default "default")
 #   EXP_PACKAGE     npm package spec (default local repo cli when available,
@@ -18,7 +18,7 @@ set -euo pipefail
 SKILL_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 REPO_ROOT="$(cd "$SKILL_ROOT/../.." && pwd -P)"
 TARGET="${EXP_CLAUDE_SKILL_DIR:-$HOME/.claude/skills/experience-pool}"
-BASE="${EXP_BASE_URL:-http://127.0.0.1:3080}"
+BASE="${EXP_BASE_URL:-https://expool.clawsii.com}"
 NAME="${EXP_AGENT_NAME:-${USER}-$(hostname -s)}"
 TEAM="${EXP_TEAM:-default}"
 if [ -n "${EXP_PACKAGE:-}" ]; then

@@ -31,18 +31,21 @@
 
 ## 1. 任务开始前 —— SEARCH
 
-用户提的问题如果听上去**做过类似的**(调试一个熟悉的工具、对接一个已知服务、
-重复某类工作),**先搜**:
+每个非平凡任务开始前,先把当前局部目标压成一句话,从**个人池的子经验 RAG**召回。
+优先调用 MCP 工具 `mcp__expool__exp_rag_context`
+(`scope=personal`,`top_k=3`);没有 MCP 时再跑:
 
 ```bash
-~/.experience-pool/bin/exp search --q "<一行任务描述>" --top-k 5
+~/.experience-pool/bin/exp rag-context --q "<当前局部目标>" --scope personal --top-k 3
 ```
 
-每条结果是一张卡片,带 `intent`、`script_steps`、`pitfalls`、`q_scalar` 质量分。
-**读 top hit**——如果跟当前任务相关,就采纳那个 script,在你的回复里**点出来**:
-"我复用了上周一条经验里的方案,核心步骤是 …"。
+平台返回的是长 session 切出的局部经验单元,每个单元都带父 session 定位。
+只采用相关度达标的片段;不要为了凑数量注入弱命中。默认最多 3 条、每个父 session
+只取最佳 1 条。命中有用时总结步骤和坑,不要把原始 JSON 贴给用户。
 
-不要把原始 JSON 贴给用户。要总结。
+如果召回返回 `event_id`,任务结束后反馈一次:`+1`=实际使用且有帮助,
+`0`=没使用/无关,`-1`=误导。优先调用 `mcp__expool__exp_reuse_feedback`;
+CLI fallback 为 `exp reuse-feedback --event-id <id> --reward <n> --confidence 0.35`。
 
 ---
 

@@ -8,6 +8,7 @@ dependencies = [
     "structlog>=24.4",
     "pyyaml>=6.0",
     "pyarrow>=15",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ server = [
 
 [project.scripts]
 expctl = "exp_core.cli:main"
+exp-rag-eval = "exp_core.rag_eval:main"
 
 [build-system]
 requires = ["hatchling"]

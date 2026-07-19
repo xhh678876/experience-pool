@@ -10,6 +10,11 @@
 
 ## 1. 安装
 
+仓库内的统一配置入口是 `config/env.sh`。本机开发默认读取
+`config/environments/development.sh`，生产守护脚本默认读取
+`production.sh` + Git 忽略的 `production.local.sh`。完整变量和优先级见
+`config/README.md`。
+
 ```bash
 sudo useradd --system --home /var/lib/expool --shell /usr/sbin/nologin expool
 sudo mkdir -p /opt/experience-pool /var/lib/expool /var/backups/expool
@@ -31,6 +36,10 @@ sudo -u expool npm run build
 sudo install -d -m 0750 -o root -g expool /etc/expool
 sudo tee /etc/expool/expool.env >/dev/null <<'EOF'
 EXP_BIND_BASE_URL=https://expool.example.com
+EXP_ROOT=/var/lib/expool
+EXP_DB_PATH=/var/lib/expool/pool.db
+EXP_TRAJECTORIES_DIR=/var/lib/expool/trajectories
+EXP_CREDENTIALS_DIR=/var/lib/expool/credentials
 EXP_REGISTER_TOKEN=<random-long-secret>
 EXP_USER_REGISTER_TOKEN=<random-long-secret>
 EXP_ADMIN_TOKEN=<random-long-secret>
@@ -69,6 +78,12 @@ Caddy 默认监听 `:80`，上线前请把 `deploy/Caddyfile` 第一行改成你
 
 ```bash
 ./scripts/run-intranet-local.sh
+```
+
+Docker 部署使用同一套 profile：
+
+```bash
+EXP_ENV=production ./deploy/compose.sh up -d
 ```
 
 默认地址：

@@ -1,22 +1,21 @@
 import Link from "@/components/ui/link";
-import { Database, Search, Sparkles, Filter, X } from "lucide-react";
+import { Search, Sparkles, Filter, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import {
-  listAgents,
   searchMvpExperiences,
   type MvpExperienceHit,
 } from "@/lib/mvp-queries";
 import { distinctValues } from "@/lib/queries";
+import { getCurrentUser } from "@/lib/auth";
 import { formatDate, sensitivityColor, shortId } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = {
   q?: string;
-  agent?: string;
   task?: string;
   sensitivity?: string;
   acl?: string;
@@ -39,8 +38,9 @@ export default async function SearchPage({
   searchParams: Promise<SearchParams>;
 }) {
   const sp = await searchParams;
-  const agents = listAgents();
-  const viewer = sp.agent ?? agents[0]?.name ?? "";
+  const me = await getCurrentUser();
+  // URL parameters must never select another user's private-pool identity.
+  const viewer = me?.default_agent_name ?? "";
   const task = sp.task ?? "all";
   const sensitivity = sp.sensitivity ?? "all";
   const acl = sp.acl ?? "all";
@@ -68,8 +68,8 @@ export default async function SearchPage({
   });
   const hits = filtered.slice(0, topK);
 
-  const taskTypes = distinctValues("task_type");
-  const sensitivities = distinctValues("sensitivity");
+  const taskTypes = distinctValues("task_type", viewer);
+  const sensitivities = distinctValues("sensitivity", viewer);
   const hasFilters = Boolean(q || task !== "all" || sensitivity !== "all" || acl !== "all");
 
   return (
@@ -94,16 +94,6 @@ export default async function SearchPage({
             />
           </div>
           <div className="flex flex-wrap gap-2">
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">视角 agent</label>
-              <Select name="agent" defaultValue={viewer} className="h-10 min-w-[140px]">
-                {agents.map((a) => (
-                  <option key={a.agent_id} value={a.name}>
-                    {a.name} ({a.team})
-                  </option>
-                ))}
-              </Select>
-            </div>
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">任务类型</label>
               <Select name="task" defaultValue={task} className="h-10 min-w-[140px]">
@@ -199,7 +189,9 @@ export default async function SearchPage({
             ACL 在 SQL 之外二次过滤。
           </p>
           <p className="mt-1 text-xs text-muted-foreground/70">
-            提示：vector + 你选的 agent 视角共同决定召回范围；选不同 agent 看到不同结果。
+            {me
+              ? `当前按登录账号 ${me.email} 的个人池权限检索。`
+              : "当前未登录，只检索 public/community 内容。"}
           </p>
         </section>
       )}

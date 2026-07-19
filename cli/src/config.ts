@@ -25,7 +25,7 @@ export interface Endpoint {
 }
 
 export const DEFAULT_BASE_URL =
-  process.env.EXP_BASE_URL ?? "http://localhost:8080";
+  process.env.EXP_BASE_URL ?? "https://expool.clawsii.com";
 
 export function credentialsDir(): string {
   if (process.env.EXP_CREDENTIALS_DIR) {

@@ -28,6 +28,35 @@ export function registerReadTools(server: McpServer, runner: CommandRunner): voi
   );
 
   server.registerTool(
+    "exp_rag_context",
+    {
+      description: "平台侧 RAG 召回：按切分后的经验片段检索并返回紧凑 context pack，推荐用于自动召回和任务开工前检索。",
+      inputSchema: {
+        q: z.string().describe("自由文本查询"),
+        top_k: z.number().int().positive().default(3),
+        scope: z.string().default("personal").describe("auto | personal | community | project:<slug>"),
+        task_type: z.string().optional(),
+        project: z.string().optional().describe("项目 slug/id；也可用 scope=project:<slug>"),
+      },
+    },
+    async ({ q, top_k, scope, task_type, project }) => {
+      const args = [
+        "rag-context",
+        "--q",
+        q,
+        "--top-k",
+        String(top_k),
+        "--scope",
+        scope,
+        "--json",
+      ];
+      if (task_type) args.push("--task-type", task_type);
+      if (project) args.push("--project", project);
+      return wrap(await runner.run(args));
+    },
+  );
+
+  server.registerTool(
     "exp_get",
     {
       description: "按 id 拉取一条经验的完整卡片。",

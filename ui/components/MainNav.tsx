@@ -1,5 +1,16 @@
 import Link from "@/components/ui/link";
-import { Database, Globe2, Radar, Search, ShieldCheck } from "lucide-react";
+import {
+  Award,
+  Database,
+  FolderKanban,
+  Globe2,
+  KeyRound,
+  Plug,
+  Radar,
+  Search,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 
 interface NavItem {
   href: string;
@@ -15,7 +26,12 @@ const fleetEnabled = ["1", "true", "yes"].includes(
 
 // 极简一级导航：默认只留最常用入口；可选功能用环境变量显式打开。
 const primaryNav: NavItem[] = [
+  { href: "/plugins",     label: "插件",   title: "安装和配置 Experience Pool 插件",      icon: <Plug className="h-4 w-4" /> },
+  { href: "/me/api-keys", label: "API Key", title: "管理经验池 API Key 和本机绑定凭据",  icon: <KeyRound className="h-4 w-4" /> },
+  { href: "/rewards",     label: "Q值排序", title: "按复用率和奖励查看经验 Q 值排序",    icon: <Award className="h-4 w-4" /> },
   { href: "/search",      label: "检索",   title: "向量检索池子里的经验",                icon: <Search className="h-4 w-4" /> },
+  { href: "/recall",      label: "召回",   title: "查看自动召回命中和注入上下文",        icon: <Sparkles className="h-4 w-4" /> },
+  { href: "/projects",    label: "项目池", title: "创建项目并共享成员个人经验库",        icon: <FolderKanban className="h-4 w-4" /> },
   { href: "/experiences", label: "经验库", title: "全部经验列表 + 详情",                 icon: <Database className="h-4 w-4" /> },
   { href: "/me",          label: "我的",   title: "我上传的经验 / 撤回 / 一键发布",       icon: <ShieldCheck className="h-4 w-4" /> },
   { href: "/community",   label: "社区池", title: "已发布到社区的经验（需先发布 3 条解锁）", icon: <Globe2 className="h-4 w-4" /> },

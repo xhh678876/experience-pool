@@ -221,7 +221,7 @@ export async function publishExperience(
   if (row.trajectory_path) {
     try {
       const sidecar = JSON.parse(
-        fs.readFileSync(row.trajectory_path, "utf-8")
+        fs.readFileSync(/* turbopackIgnore: true */ row.trajectory_path, "utf-8")
       );
       walk(sidecar.trajectory ?? null, "trajectory", hits);
       walk(sidecar.system ?? null, "system", hits);

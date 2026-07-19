@@ -1,11 +1,15 @@
 import Link from "@/components/ui/link";
 import {
   Activity,
+  ArrowRight,
   Award,
   Boxes,
+  CircleCheck,
   Database,
   Layers3,
+  PlugZap,
   Search,
+  ShieldCheck,
   Sparkles,
   Terminal,
   Trophy,
@@ -17,7 +21,6 @@ import { Input } from "@/components/ui/input";
 import { CopyButton } from "@/components/ui/copy-button";
 import {
   getMvpStats,
-  listAgents,
   searchMvpExperiences,
   type MvpExperienceHit,
 } from "@/lib/mvp-queries";
@@ -27,12 +30,15 @@ import {
   topAgentsByContribution,
   type SessionGroup,
 } from "@/lib/queries";
+import { getCurrentUser } from "@/lib/auth";
 import { formatDate, sensitivityColor, shortId } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
-const PLUGIN_REPO_URL = (process.env.EXP_PLUGIN_REPO_URL ?? "").trim();
-const NPM_PACKAGE = process.env.EXP_PLUGIN_NPM_PACKAGE ?? "@chuangzhi/expool-plugin";
+const PLUGIN_REPO_URL = (
+  process.env.EXP_PLUGIN_REPO_URL ?? "https://github.com/xhh678876/expool-mcp-plugin"
+).trim().replace(/\.git$/, "");
+const NPM_PACKAGE = process.env.EXP_PLUGIN_NPM_PACKAGE ?? "@haohui666/expool-plugin";
 const INSTALL_CMD =
   process.env.EXP_PLUGIN_INSTALL_CMD ??
   (PLUGIN_REPO_URL
@@ -49,7 +55,6 @@ const SAMPLE_QUERIES = [
 
 type SearchParams = {
   q?: string;
-  agent?: string;
 };
 
 export default async function MarketHome({
@@ -59,11 +64,18 @@ export default async function MarketHome({
 }) {
   const sp = await searchParams;
   const q = (sp.q ?? "").trim();
-  const agents = listAgents();
-  const viewer = sp.agent ?? agents[0]?.name ?? "";
+  const me = await getCurrentUser();
+  // Never accept an agent identity from the URL. Private ACL is derived only
+  // from the authenticated portal session; anonymous visitors see public rows.
+  const viewer = me?.default_agent_name ?? "";
   const stats = getMvpStats();
   const dash = getDashboardStats();
-  const sessions = await listRecentSessions(8);
+  const sessions = await listRecentSessions(
+    8,
+    me
+      ? { scope: "personal", viewerName: me.default_agent_name }
+      : { scope: "public" },
+  );
   const top = await topAgentsByContribution(8);
 
   const hits = q
@@ -72,66 +84,119 @@ export default async function MarketHome({
 
   return (
     <div className="flex flex-col gap-6 pb-12">
-      {/* HERO — centered layout */}
-      <section className="overflow-hidden rounded-3xl border border-border/60 bg-gradient-to-br from-cyan-50 via-white to-amber-50/60 px-6 py-10 sm:py-12">
-        <div className="mx-auto flex max-w-2xl flex-col items-center text-center">
-          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-cyan-600/30 bg-white/80 px-3 py-1 text-[11px] font-medium text-cyan-800">
-            <Sparkles className="h-3 w-3" /> Experience Pool · 多 agent 共享经验池
-          </div>
-          <h1 className="text-3xl font-semibold leading-tight text-foreground sm:text-4xl">
-            任意 agent → 任意机器 → <span className="text-cyan-700">共享池</span>
-          </h1>
-          <p className="mt-3 text-sm leading-7 text-muted-foreground sm:text-[15px]">
-            多 agent 自动脱敏上传 session，开工前先搜前人经验，少踩坑。
-          </p>
-
-          <form className="mt-6 flex w-full flex-col items-center gap-2 sm:flex-row sm:justify-center">
-            <div className="w-full max-w-xl flex-1">
-              <Input
-                name="q"
-                defaultValue={q}
-                placeholder="搜池子里前人的经验，例如：FastAPI HMAC 验签"
-                className="h-11 text-sm"
-              />
+      <section className="overflow-hidden rounded-lg border border-border/70 bg-white/88 shadow-sm">
+        <div className="grid gap-0 lg:grid-cols-[1fr_360px]">
+          <div className="border-b border-border/60 px-5 py-5 lg:border-b-0 lg:border-r lg:px-7 lg:py-7">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-cyan-700/20 bg-cyan-50 px-2.5 py-1 text-[11px] font-medium text-cyan-800">
+                <Sparkles className="h-3.5 w-3.5" />
+                Experience Pool
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-700/20 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-800">
+                <CircleCheck className="h-3.5 w-3.5" />
+                private by default
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/60 px-2.5 py-1 text-[11px] text-muted-foreground">
+                Claude Code · Codex · OpenClaw · Hermes
+              </span>
             </div>
-            <input type="hidden" name="agent" value={viewer} />
-            <Button type="submit" className="h-11 px-5">
-              <Search className="mr-1.5 h-4 w-4" />
-              搜索
-            </Button>
-            <Link href="/search" className="text-xs text-muted-foreground hover:text-cyan-800">
-              高级检索 →
-            </Link>
-          </form>
 
-          {!q ? (
-            <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">试试：</span>
-              {SAMPLE_QUERIES.map((s) => (
-                <Link
-                  key={s}
-                  href={`/?q=${encodeURIComponent(s)}`}
-                  className="rounded-full border border-border/60 bg-white/70 px-2.5 py-1 text-[11px] text-muted-foreground hover:border-cyan-600/40 hover:text-cyan-800"
-                >
-                  {s}
-                </Link>
-              ))}
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_260px]">
+              <div>
+                <h1 className="max-w-3xl text-2xl font-semibold leading-tight text-foreground sm:text-3xl">
+                  开工先查经验，收工自动沉淀。
+                </h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                  把多 agent 的任务轨迹脱敏成可检索的经验卡。团队成员下一次遇到相似问题时，直接复用已经跑通的步骤。
+                </p>
+
+                <form className="mt-5 flex w-full flex-col gap-2 sm:flex-row">
+                  <Input
+                    name="q"
+                    defaultValue={q}
+                    placeholder="搜索经验，例如：FastAPI HMAC 验签"
+                    className="h-11 min-w-0 flex-1 bg-white text-sm"
+                  />
+                  <Button type="submit" className="h-11 px-5">
+                    <Search className="mr-1.5 h-4 w-4" />
+                    搜索
+                  </Button>
+                  <Link
+                    href="/search"
+                    className="inline-flex h-11 items-center justify-center rounded-md border border-border bg-background px-4 text-sm font-medium transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    高级检索
+                    <ArrowRight className="ml-1.5 h-4 w-4" />
+                  </Link>
+                </form>
+
+                {!q ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] text-muted-foreground">试试</span>
+                    {SAMPLE_QUERIES.map((s) => (
+                      <Link
+                        key={s}
+                        href={`/?q=${encodeURIComponent(s)}`}
+                        className="rounded-md border border-border/60 bg-white px-2.5 py-1 text-[11px] text-muted-foreground hover:border-cyan-600/40 hover:text-cyan-800"
+                      >
+                        {s}
+                      </Link>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 xl:grid-cols-1">
+                <QuickAction
+                  href="/plugins"
+                  icon={<PlugZap className="h-4 w-4" />}
+                  label="接入 agent"
+                  detail="安装插件并绑定账号"
+                />
+                <QuickAction
+                  href="/me/api-keys"
+                  icon={<ShieldCheck className="h-4 w-4" />}
+                  label="API Key"
+                  detail="生成配对码或长期 key"
+                />
+              </div>
             </div>
-          ) : null}
-        </div>
 
-        {q ? (
-          <div className="mx-auto mt-6 max-w-3xl text-left">
-            <SearchResults hits={hits} q={q} />
+            {q ? (
+              <div className="mt-5 max-w-3xl text-left">
+                <SearchResults hits={hits} q={q} />
+              </div>
+            ) : null}
           </div>
-        ) : null}
 
-        {/* Stats row — horizontal under the hero text */}
-        <div className="mx-auto mt-8 grid max-w-3xl grid-cols-2 gap-2 sm:grid-cols-4">
-          <HeroTile icon={<Database className="h-3.5 w-3.5" />} label="经验" value={dash.total} />
-          <HeroTile icon={<Users className="h-3.5 w-3.5" />} label="agent" value={stats.agents} />
-          <HeroTile icon={<Award className="h-3.5 w-3.5" />} label="脱敏命中" value={stats.redactions} />
-          <HeroTile icon={<Layers3 className="h-3.5 w-3.5" />} label="任务类型" value={dash.byTaskType.length} />
+          <div className="flex flex-col gap-4 bg-[linear-gradient(180deg,hsl(174_45%_96%),hsl(45_34%_95%))] px-5 py-5 lg:px-6 lg:py-7">
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-xs font-medium text-cyan-900">
+                <Activity className="h-4 w-4" />
+                池子状态
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <HeroTile icon={<Database className="h-3.5 w-3.5" />} label="经验" value={dash.total} />
+                <HeroTile icon={<Users className="h-3.5 w-3.5" />} label="agent" value={stats.agents} />
+                <HeroTile icon={<Award className="h-3.5 w-3.5" />} label="脱敏" value={stats.redactions} />
+                <HeroTile icon={<Layers3 className="h-3.5 w-3.5" />} label="类型" value={dash.byTaskType.length} />
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-white/80 p-3">
+              <div className="mb-2 flex items-center gap-2 text-xs font-medium">
+                <Terminal className="h-4 w-4 text-muted-foreground" />
+                快速安装
+              </div>
+              <code className="block truncate rounded-md border border-border/60 bg-muted/60 px-2.5 py-2 font-mono text-[11px] text-foreground">
+                {INSTALL_CMD}
+              </code>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-[11px] text-muted-foreground">默认上传到 private</span>
+                <CopyButton text={INSTALL_CMD} label="复制" className="h-7 px-3" />
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -142,10 +207,10 @@ export default async function MarketHome({
             <Boxes className="h-4 w-4 text-cyan-700" />
             <h2 className="text-sm font-semibold">最近 session</h2>
             <span className="text-xs text-muted-foreground">
-              · 同 session 的多个任务段聚合显示
+              · {me ? "我的私有池优先" : "公共池预览"} · 同 session 的多个任务段聚合显示
             </span>
             <Link
-              href="/experiences"
+              href="/sessions"
               className="ml-auto text-xs text-muted-foreground hover:text-cyan-800"
             >
               查看全部 →
@@ -244,8 +309,8 @@ function HeroTile({
   value: number | string;
 }) {
   return (
-    <div className="flex flex-col items-center gap-0.5 rounded-xl border border-border/50 bg-white/85 px-3 py-3">
-      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+    <div className="flex min-h-[76px] flex-col justify-between rounded-lg border border-border/50 bg-white/85 px-3 py-3">
+      <div className="flex items-center gap-1 text-[10px] uppercase text-muted-foreground">
         {icon}
         {label}
       </div>
@@ -254,8 +319,37 @@ function HeroTile({
   );
 }
 
+function QuickAction({
+  href,
+  icon,
+  label,
+  detail,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex min-h-[76px] flex-col justify-between rounded-lg border border-border/60 bg-white/75 p-3 text-left transition hover:border-cyan-600/40 hover:bg-cyan-50/40"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-cyan-800">{icon}</span>
+        <ArrowRight className="h-3.5 w-3.5 text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-cyan-800" />
+      </div>
+      <div>
+        <div className="text-sm font-medium text-foreground">{label}</div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground">{detail}</div>
+      </div>
+    </Link>
+  );
+}
+
 function SessionRow({ group }: { group: SessionGroup }) {
   const segCount = group.segments.length;
+  const totalTurns = group.segments.reduce((sum, segment) => sum + segment.turn_count, 0);
   const isMulti = segCount > 1;
   const headTask = group.segments[0]?.intent_text || "(no intent)";
 
@@ -265,9 +359,9 @@ function SessionRow({ group }: { group: SessionGroup }) {
         <Badge variant="outline" className="font-mono uppercase">
           {group.agent_type}
         </Badge>
-        {isMulti ? (
-          <Badge className="bg-cyan-100 text-cyan-900 font-mono">
-            {segCount} 段 · 同一 session
+        {isMulti || totalTurns > 0 ? (
+          <Badge className="bg-cyan-100 font-mono text-cyan-900">
+            {isMulti ? `${segCount} 段 · ${totalTurns} turns` : `${totalTurns} turns`}
           </Badge>
         ) : null}
         <span className="text-muted-foreground">{group.agent_name || "unknown"}</span>

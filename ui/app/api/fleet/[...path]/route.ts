@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { isCurrentAdmin } from "@/lib/auth";
 
 // Read-only reverse proxy to local claude-fleet. Keep this route narrow:
 // Next middleware excludes api/*, so only explicitly allow endpoints the UI
@@ -31,6 +32,9 @@ function allowedFleetPath(path: string[]): string | null {
 async function proxy(req: NextRequest, path: string[]): Promise<Response> {
   if (!FLEET_ENABLED) {
     return json(404, { error: "fleet disabled" });
+  }
+  if (!(await isCurrentAdmin())) {
+    return json(403, { error: "admin access required" });
   }
   const safePath = allowedFleetPath(path);
   if (!safePath) {

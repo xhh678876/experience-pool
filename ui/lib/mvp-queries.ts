@@ -7,6 +7,7 @@ export type AgentOption = {
   name: string;
   team: string;
   agent_id: string;
+  owner: string | null;
 };
 
 export type MvpExperienceHit = {
@@ -52,8 +53,10 @@ type DbRow = {
   task_type: string;
   source_model: string;
   acl: string;
+  owner: string | null;
   review_status: string;
   sensitivity: string;
+  publish_status: string;
   created_at: string;
   visit_count: number | null;
   vector?: Buffer;
@@ -63,7 +66,7 @@ type CountRow = { count: number };
 
 export function listAgents(): AgentOption[] {
   return safeAll<AgentOption>(
-    "SELECT agent_id, name, team FROM agents ORDER BY name ASC",
+    "SELECT agent_id, name, team, owner FROM agents ORDER BY name ASC",
   );
 }
 
@@ -96,7 +99,8 @@ export function getMvpStats(): MvpStats {
       `SELECT COUNT(*) AS count FROM experiences ${liteWhere} AND acl LIKE 'team:%'`,
     ),
     publicRows: safeCount(
-      `SELECT COUNT(*) AS count FROM experiences ${liteWhere} AND acl IN ('public', 'org')`,
+      `SELECT COUNT(*) AS count FROM experiences ${liteWhere}
+       AND acl = 'public' AND COALESCE(publish_status, 'private') = 'published'`,
     ),
     redactions: countLiteRedactions(),
     topTasks,
@@ -122,17 +126,29 @@ export async function searchMvpExperiences({
     params.push(taskType);
   }
 
-  // SQL-level ACL filter — public OR mine. Belt-and-suspenders with the
-  // canRead() filter below (which only saw `viewer` from a stale cookie).
-  const { aclVisibilityClause } = await import("./acl-filter");
-  const acl = await aclVisibilityClause();
+  const aclParams: unknown[] = [];
+  let aclClause =
+    "(e.acl = 'public' AND COALESCE(e.publish_status, 'private') = 'published')";
+  if (viewer) {
+    const owner = viewer.owner ?? viewer.name;
+    aclClause = `(
+      a.agent_id = ?
+      OR a.owner = ?
+      OR (a.owner IS NULL AND a.name = ?)
+      OR (e.acl = 'public' AND COALESCE(e.publish_status, 'private') = 'published')
+      OR (COALESCE(e.acl, 'private') LIKE 'team:%' AND substr(COALESCE(e.acl, 'private'), 6) = ?)
+    )`;
+    aclParams.push(viewer.agent_id, owner, owner, viewer.team);
+  }
 
   const rows = safeAll<DbRow>(
     `
     SELECT v.vector, e.experience_id, e.agent_id, a.name AS agent_name, a.team,
+           a.owner,
            e.query, e.intent_text, e.script_steps, e.outcome, e.summary,
            e.task_type, e.source_model, e.acl, e.review_status, e.sensitivity,
-           e.created_at, e.visit_count
+           e.created_at, e.visit_count,
+           COALESCE(e.publish_status, 'private') AS publish_status
     FROM vectors v
     JOIN experiences e ON e.experience_id = v.experience_id
     JOIN agents a ON a.agent_id = e.agent_id
@@ -141,10 +157,10 @@ export async function searchMvpExperiences({
       AND COALESCE(e.revoked, 0) = 0
       AND e.review_status IN ('approved', 'auto_approved', 'edited')
       AND e.extraction_status = 'done'
-      AND ${acl.sql}
+      AND ${aclClause}
       ${taskClause}
     `,
-    [...acl.params, ...params],
+    [...aclParams, ...params],
   ).filter((row) => canRead(viewer, row));
 
   const trimmedQuery = query.trim();
@@ -171,7 +187,8 @@ export async function listRecentMvpExperiences(limit = 8): Promise<MvpExperience
     SELECT e.experience_id, e.agent_id, a.name AS agent_name, a.team,
            e.query, e.intent_text, e.script_steps, e.outcome, e.summary,
            e.task_type, e.source_model, e.acl, e.review_status, e.sensitivity,
-           e.created_at, e.visit_count
+           e.created_at, e.visit_count,
+           COALESCE(e.publish_status, 'private') AS publish_status
     FROM experiences e
     JOIN agents a ON a.agent_id = e.agent_id
     WHERE COALESCE(e.ingest_path, 'full') = 'lite'
@@ -187,15 +204,22 @@ export async function listRecentMvpExperiences(limit = 8): Promise<MvpExperience
 function getViewer(viewerName: string): AgentOption | null {
   if (!viewerName) return null;
   return safeGet<AgentOption>(
-    "SELECT agent_id, name, team FROM agents WHERE name = ?",
+    "SELECT agent_id, name, team, owner FROM agents WHERE name = ?",
     [viewerName],
   );
 }
 
 function canRead(viewer: AgentOption | null, row: DbRow): boolean {
-  if (row.acl === "public" || row.acl === "org") return true;
+  if (row.acl === "public") return row.publish_status === "published";
   if (!viewer) return false;
-  if (row.acl === "private") return viewer.agent_id === row.agent_id;
+  const viewerOwner = viewer.owner ?? viewer.name;
+  if (row.acl === "private") {
+    return (
+      viewer.agent_id === row.agent_id ||
+      row.owner === viewerOwner ||
+      (!row.owner && row.agent_name === viewerOwner)
+    );
+  }
   if (row.acl.startsWith("team:")) return row.acl.slice("team:".length) === viewer.team;
   return false;
 }

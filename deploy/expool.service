@@ -7,13 +7,19 @@ Type=simple
 User=expool
 Group=expool
 WorkingDirectory=/opt/experience-pool/core
-EnvironmentFile=-/etc/expool/expool.env
 Environment=EXP_ROOT=/var/lib/expool
+Environment=EXP_DB_PATH=/var/lib/expool/pool.db
+Environment=EXP_TRAJECTORIES_DIR=/var/lib/expool/trajectories
+Environment=EXP_CREDENTIALS_DIR=/var/lib/expool/credentials
 Environment=EXP_RATE_LIMIT_ENABLED=1
 Environment=EXP_RATE_PUSH_PER_MIN=60
 Environment=EXP_RATE_SEARCH_PER_MIN=1000
 Environment=EXP_RATE_PUSH_SKILL_PER_MIN=10
-ExecStart=/usr/local/bin/uv run --extra server uvicorn exp_core.server:app --host 127.0.0.1 --port 8080 --workers 1
+Environment=EXP_SERVICE_HOST=127.0.0.1
+Environment=EXP_API_PORT=8080
+Environment=EXP_API_WORKERS=1
+EnvironmentFile=-/etc/expool/expool.env
+ExecStart=/usr/local/bin/uv run --extra server uvicorn exp_core.server:app --host ${EXP_SERVICE_HOST} --port ${EXP_API_PORT} --workers ${EXP_API_WORKERS}
 Restart=on-failure
 RestartSec=5
 UMask=0077

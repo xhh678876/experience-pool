@@ -10,8 +10,10 @@ const footerLinks: { href: string; label: string }[] = [
   { href: "/skills",      label: "技能" },
   { href: "/api-docs",    label: "API 文档" },
   { href: "/consent",     label: "Consent" },
-  { href: "/admin",       label: "Admin" },
 ];
+if ((process.env.EXP_ADMIN_EMAILS ?? "").trim()) {
+  footerLinks.push({ href: "/admin", label: "Admin" });
+}
 
 export default function SiteFooter() {
   return (

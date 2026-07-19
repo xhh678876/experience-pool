@@ -21,5 +21,11 @@ const search = await client.callTool({
 });
 console.log("[smoke] exp_search ->", JSON.stringify(search).slice(0, 700));
 
+const rag = await client.callTool({
+  name: "exp_rag_context",
+  arguments: { q: "expool 插件改进", top_k: 2, scope: "personal" },
+});
+console.log("[smoke] exp_rag_context ->", JSON.stringify(rag).slice(0, 700));
+
 await client.close();
 console.log("[smoke] OK");

@@ -39,7 +39,7 @@ program
   .version("0.1.0")
   .option(
     "--base <url>",
-    "Gateway URL (env EXP_BASE_URL, default http://localhost:8080)",
+    "Gateway URL (env EXP_BASE_URL, default https://expool.clawsii.com)",
     DEFAULT_BASE_URL,
   );
 
